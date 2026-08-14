@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 import hashlib
 import io
 import json
@@ -339,6 +340,49 @@ def parse_role_input(value: str | None, fallback: List[str]) -> List[str]:
 
     roles = [role.strip() for role in re.split(r"[,\n]", value) if role.strip()]
     return list(dict.fromkeys(roles)) or fallback.copy()
+
+
+def build_applied_job_preferences(jobs: List[Dict[str, Any]]) -> str:
+    """Summarize the user's applied-job history for preference-aware search prompts."""
+    applied_jobs = [
+        job for job in jobs
+        if str(job.get("Applied", "")).strip().lower() == "yes"
+    ]
+    if not applied_jobs:
+        return "No applied-job history is available yet."
+
+    role_categories = {
+        "QA and testing": r"quality assurance|\bqa\b|test engineer|testing|tester|software quality|quality specialist|quality engineer",
+        "Data and analytics": r"data analyst|data engineer|data operations|data quality|analytics|model operations|modelops",
+        "Technical support": r"technical support|support engineer|support technician|application support|customer support|service delivery",
+        "Operations": r"operations|assurance|capacity|content operations",
+        "Business and systems analysis": r"business analyst|systems analyst|business applications",
+        "Engineering and development": r"engineer|developer|software|automation|prompt",
+        "Product and consulting": r"consultant|product specialist|product management",
+    }
+    category_counts = Counter()
+    for job in applied_jobs:
+        title = str(job.get("Job Title", "")).lower()
+        matched_category = next(
+            (category for category, pattern in role_categories.items() if re.search(pattern, title, re.IGNORECASE)),
+            "Other",
+        )
+        category_counts[matched_category] += 1
+
+    category_summary = ", ".join(
+        f"{category} ({count})"
+        for category, count in category_counts.most_common()
+    )
+    selected_roles = "\n".join(
+        f"- {job.get('Job Title', 'Not specified')} — {job.get('Company', 'Not specified')}"
+        for job in applied_jobs
+    )
+    return (
+        f"The user has applied to {len(applied_jobs)} saved jobs. Their strongest demonstrated preferences "
+        f"by role family are: {category_summary}. Use these as a strong ranking signal when selecting "
+        "new roles, while still checking the CV, target roles, exclusions, location, freshness, and listing status. "
+        "Applied-job history:\n" + selected_roles
+    )
 
 
 def update_verification_rows(rows: List[Dict[str, Any]]) -> None:
@@ -780,6 +824,7 @@ async def run_incremental_job_finder(
     roles_batches = [target_roles[i:i + batch_size] for i in range(0, len(target_roles), batch_size)]
     excluded_str = ", ".join(excluded_roles)
     existing_jobs = import_jobs_from_csv("job_matches.csv")
+    applied_job_preferences = build_applied_job_preferences(existing_jobs)
     saved_job_keys = {
         (
             str(job.get("Job Title", "")).strip().casefold(),
@@ -878,7 +923,14 @@ async def run_incremental_job_finder(
         12. Always return Original Listing URL as the exact direct URL where the job was found.
               Return the official URL in URL when verified; otherwise return the original job-board
               URL in URL.
-          13. Existing saved-job ledger for duplicate checking:
+          13. Use this applied-job history as a strong preference signal. Prioritize new jobs that
+              resemble the user's repeatedly applied role families and title patterns, but do not
+              assume that every previously applied role is suitable. The CV, target roles, exclusion
+              list, Dublin location, freshness, exact listing identity, and expiry checks remain
+              mandatory.
+          14. Applied-job preference profile:
+{applied_job_preferences}
+          15. Existing saved-job ledger for duplicate checking:
 {existing_jobs_summary}
         
         Output ONLY a valid JSON array (no markdown, no ```json wrapper):
@@ -908,6 +960,7 @@ async def run_incremental_job_finder(
             f"Search Google for job listings in {TARGET_LOCATION} "
             f"for these roles: {batch_roles_str}. "
             f"Only include jobs posted in the last 7 days. "
+            f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
             f"Do not return any title/company pair already present in the complete saved-job ledger "
             f"included in your instructions. "
             f"Match them against this candidate profile:\n{cv_summary}"
