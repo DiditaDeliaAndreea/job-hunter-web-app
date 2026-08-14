@@ -215,6 +215,28 @@ def _url_tokens(value: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", value.lower()) if len(token) > 2}
 
 
+def _url_is_expired_sync(url: str) -> bool:
+    """Detect definitive HTTP removal or closure text for a saved listing URL."""
+    if not url.startswith("http"):
+        return False
+
+    headers = {"User-Agent": "CareerMatch/1.0 job-listing-check"}
+    try:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            if response.headers.get_content_type() not in {"text/html", "application/xhtml+xml"}:
+                return False
+            page = response.read(512_000).decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as exc:
+        return exc.code in {404, 410}
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return False
+
+    visible_text = re.sub(r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<[^>]+>", " ", page, flags=re.I | re.S)
+    visible_text = unescape(re.sub(r"\s+", " ", visible_text))
+    return is_expired_listing_text(visible_text)
+
+
 def _check_url_sync(url: str, job_title: str, company: str, allow_client_rendered: bool = False) -> bool:
     """Check HTTP reachability and listing identity without blocking the event loop."""
     headers = {"User-Agent": "CareerMatch/1.0 job-listing-check"}
@@ -337,6 +359,15 @@ def update_verification_rows(rows: List[Dict[str, Any]]) -> None:
             verification_status = "Expired"
         if is_expired_listing_text(str(result.get("Job Title") or "")) or is_expired_listing_text(str(result.get("Company") or "")):
             verification_status = "Expired"
+        if verification_status not in {"Active", "Expired"}:
+            urls_to_check = {
+                str(result.get("Official Listing URL") or "").strip(),
+                str(job.get("Official Listing URL") or "").strip(),
+                str(job.get("URL") or "").strip(),
+                str(job.get("Original Listing URL") or "").strip(),
+            }
+            if any(_url_is_expired_sync(url) for url in urls_to_check):
+                verification_status = "Expired"
 
         job["Verification Status"] = verification_status
         job["Verification Notes"] = verification_notes or "Not specified"
@@ -361,13 +392,17 @@ async def run_saved_job_verification(verification_id: str) -> None:
             progress = int(batch_index / max(1, len(batches)) * 90)
             update_search_status(verification_id, f"Verifying saved jobs batch {batch_index}/{len(batches)}...", progress)
             instructions = """
-You verify saved job records using Google Search. Check the exact listing URL, then search the
-employer's official careers website for the same exact title and location. Classify each as Active,
-Expired, Blocked, or Not found. If the LinkedIn or employer page says "No longer accepting
-applications", "applications are closed", "position is no longer open", or gives any similar closure
-message, mark the job as Expired and do not treat it as an active listing. Never mark Active from a
-generic careers homepage or a LinkedIn page that explicitly says applications are closed. Return ONLY a
-JSON array with Job Title, Company, Verification Status, Verification Notes, and Official Listing URL.
+You verify saved job records using Google Search. Follow this order for every job:
+1. Check the exact LinkedIn job posting first, including the direct LinkedIn URL when one is present.
+2. Read the LinkedIn page status before checking any other source.
+3. Only if LinkedIn does not provide a decisive result, check the exact job-board posting, then the
+    employer's official careers website for the same exact title and location.
+If LinkedIn says "No longer accepting applications", "applications are closed", "position is no
+longer open", or gives any similar closure message, immediately classify the job as Expired. This
+Expired result must not be overridden by a job-board copy, an official homepage, or an older search
+snippet that appears active. Quote the closure wording and identify LinkedIn in Verification Notes.
+Never mark Active from a generic careers homepage. Return ONLY a JSON array with Job Title, Company,
+Verification Status, Verification Notes, and Official Listing URL.
 """
             prompt = "Verify these exact saved jobs:\n" + json.dumps([
                 {"Job Title": job.get("Job Title"), "Company": job.get("Company"), "Location": job.get("Location"), "URL": job.get("URL"), "Original Listing URL": job.get("Original Listing URL")}
@@ -792,17 +827,20 @@ async def run_incremental_job_finder(
               benefits, and other visible content. Do not summarize or shorten it. Do not invent
               details. The description must contain at least 500 characters of source text. If the
               full description cannot be retrieved, do not return that job.
-          10. Search across Google results from LinkedIn, Indeed, IrishJobs, Greenhouse,
-               company career sites, and other relevant job boards. If the result comes from
-               LinkedIn, Indeed, IrishJobs, or another job board, search the employer's official
-               careers domain for the same role and location. Prefer the official employer listing
-               URL in the URL field when it exists. Do not treat a company careers homepage, a
-               generic Greenhouse board, or a different job ID as verification. The official page
-               must show the exact job title and employer; otherwise mark it No.
-          11. Set Listing Source to Official company website or the job-board name. Set Official
+        10. Check sources in this strict order: first the exact LinkedIn posting, then the exact
+            job-board posting (Indeed, IrishJobs, Greenhouse, or another board), then the
+            employer's official careers listing. Inspect the LinkedIn page status before using
+            any other source. If LinkedIn says "No longer accepting applications", "applications
+            are closed", "position is no longer open", or similar, classify the role as Expired,
+            quote that wording in the verification notes, and do not return or save it as Active.
+            A job-board copy, official homepage, or older search snippet must never override a
+            LinkedIn closure message. Do not treat a company careers homepage, a generic
+            Greenhouse board, or a different job ID as verification. The official page must show
+            the exact job title and employer; otherwise mark it No.
+        11. Set Listing Source to Official company website or the job-board name. Set Official
               Listing Verified to Yes only when the exact role is found on the official employer
               site; otherwise set it to No and put Not specified in Official Listing URL.
-          12. Always return Original Listing URL as the exact direct URL where the job was found.
+        12. Always return Original Listing URL as the exact direct URL where the job was found.
               Return the official URL in URL when verified; otherwise return the original job-board
               URL in URL.
         
