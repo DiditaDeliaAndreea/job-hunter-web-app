@@ -6,6 +6,9 @@ import { ArrowLeft, ExternalLink, Briefcase, FileText, Sparkles, Pencil, Check, 
 import { getUploadedCv } from '../../../utils/browserStorage';
 import mammoth from 'mammoth';
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+const getApiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+
 interface JobRecord {
   [key: string]: string | undefined;
 }
@@ -58,7 +61,10 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       try {
         const resolvedParams = await params;
         const jobIndex = Number(resolvedParams.id);
-        const response = await fetch('http://localhost:8000/api/jobs');
+        const response = await fetch(getApiUrl('/api/jobs'));
+        if (!response.ok) {
+          throw new Error(`Jobs API request failed: ${response.status}`);
+        }
         const data = await response.json();
 
         if (!response.ok || !Array.isArray(data.jobs)) {
@@ -164,7 +170,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     formData.append('url', urlInput.trim());
 
     try {
-      const response = await fetch('http://localhost:8000/api/jobs/update-url', {
+      const response = await fetch(getApiUrl('/api/jobs/update-url'), {
         method: 'POST',
         body: formData,
       });
@@ -272,64 +278,105 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
               <p>Official employer listing verified: {job['Official Listing Verified'] || 'Not specified'}</p>
               <p>URL status: {job['URL Check Status'] || 'Not checked'}</p>
             </div>
-            {editingUrl ? (
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <input
-                  type="url"
-                  value={urlInput}
-                  onChange={(event) => setUrlInput(event.target.value)}
-                  placeholder="https://correct-job-listing-url"
-                  className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={saveUrl}
-                  title="Save preferred URL"
-                  className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            {url ? (
+              <div className="mb-3 flex flex-col items-start gap-2">
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700"
                 >
-                  <Check className="h-4 w-4" /> Save
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setEditingUrl(false)}
-                  title="Cancel URL edit"
-                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                >
-                  <X className="h-4 w-4" /> Cancel
-                </button>
+                  {officialVerified ? 'Open official listing' : 'Open original listing'} <ExternalLink className="h-4 w-4" />
+                </a>
+
+                {originalUrl && originalUrl !== url && (
+                  <a
+                    href={originalUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:underline"
+                  >
+                    View source listing <ExternalLink className="h-4 w-4" />
+                  </a>
+                )}
+
+                {editingUrl ? (
+                  <div className="mt-1 flex w-full flex-wrap items-center gap-2">
+                    <input
+                      type="url"
+                      value={urlInput}
+                      onChange={(event) => setUrlInput(event.target.value)}
+                      placeholder="https://correct-job-listing-url"
+                      className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveUrl}
+                      title="Save preferred URL"
+                      className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      <Check className="h-4 w-4" /> Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingUrl(false)}
+                      title="Cancel URL edit"
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      <X className="h-4 w-4" /> Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startUrlEdit}
+                    className="inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:underline"
+                  >
+                    <Pencil className="h-4 w-4" /> Edit listing URL
+                  </button>
+                )}
               </div>
             ) : (
-              <button
-                type="button"
-                onClick={startUrlEdit}
-                className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:underline"
-              >
-                <Pencil className="h-4 w-4" /> Edit listing URL
-              </button>
+              <div className="mb-3 flex flex-col items-start gap-2">
+                <p className="text-sm text-gray-500">The original listing URL was not provided.</p>
+                {editingUrl ? (
+                  <div className="mt-1 flex w-full flex-wrap items-center gap-2">
+                    <input
+                      type="url"
+                      value={urlInput}
+                      onChange={(event) => setUrlInput(event.target.value)}
+                      placeholder="https://correct-job-listing-url"
+                      className="min-w-0 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveUrl}
+                      title="Save preferred URL"
+                      className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      <Check className="h-4 w-4" /> Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingUrl(false)}
+                      title="Cancel URL edit"
+                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      <X className="h-4 w-4" /> Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startUrlEdit}
+                    className="inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:underline"
+                  >
+                    <Pencil className="h-4 w-4" /> Edit listing URL
+                  </button>
+                )}
+              </div>
             )}
             {urlMessage && <p className="mb-4 text-sm text-blue-700">{urlMessage}</p>}
-            {url ? (
-              <a
-                href={url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-2 rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700"
-              >
-                {officialVerified ? 'Open official listing' : 'Open original listing'} <ExternalLink className="h-4 w-4" />
-              </a>
-            ) : (
-              <p className="text-sm text-gray-500">The original listing URL was not provided.</p>
-            )}
-            {originalUrl && originalUrl !== url && (
-              <a
-                href={originalUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="ml-3 inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:underline"
-              >
-                View source listing <ExternalLink className="h-4 w-4" />
-              </a>
-            )}
           </section>
         </div>
 

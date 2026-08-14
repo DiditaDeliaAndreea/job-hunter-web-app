@@ -6,6 +6,8 @@ import { Upload, FileDown, Loader2, Briefcase, MapPin, X, RefreshCw, Filter, Tra
 import { saveUploadedCvs } from '../utils/browserStorage';
 
 const ROLE_PREFERENCES_STORAGE_KEY = 'careermatch-role-preferences';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+const getApiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 
 function formatPostedDate(value: unknown): string {
   const rawValue = String(value || '').trim();
@@ -64,6 +66,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [jobs, setJobs] = useState<any[]>([]);
   const [jobFilter, setJobFilter] = useState('');
+  const [jobSort, setJobSort] = useState('fit-score-desc');
   const [workingTypeFilter, setWorkingTypeFilter] = useState('All');
   const [minimumScore, setMinimumScore] = useState('0');
   const [salaryFilter, setSalaryFilter] = useState('All');
@@ -100,7 +103,11 @@ export default function Home() {
   // Fetch jobs from CSV
   const fetchJobs = async (updateMessage = true) => {
     try {
-      const response = await fetch('http://localhost:8000/api/jobs', { cache: 'no-store' });
+      const response = await fetch(getApiUrl('/api/jobs'), { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`Jobs API request failed: ${response.status}`);
+      }
+
       const data = await response.json();
       const csvJobs = data.jobs || [];
       setJobs(csvJobs);
@@ -112,6 +119,9 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Error fetching jobs:', error);
+      if (updateMessage) {
+        setSearchMessage('Unable to load saved jobs. Start the FastAPI backend on port 8000.');
+      }
     }
   };
 
@@ -183,7 +193,7 @@ export default function Home() {
     formData.append('company', job.Company || '');
 
     try {
-      const response = await fetch('http://localhost:8000/api/jobs/dismiss', {
+      const response = await fetch(getApiUrl('/api/jobs/dismiss'), {
         method: 'POST',
         body: formData,
       });
@@ -204,7 +214,7 @@ export default function Home() {
     formData.append('applied', String(applied));
 
     try {
-      const response = await fetch('http://localhost:8000/api/jobs/applied', {
+      const response = await fetch(getApiUrl('/api/jobs/applied'), {
         method: 'POST',
         body: formData,
       });
@@ -227,14 +237,14 @@ export default function Home() {
     setVerificationLogs(['Starting saved job verification...']);
 
     try {
-      const response = await fetch('http://localhost:8000/api/jobs/verify/start', { method: 'POST' });
+      const response = await fetch(getApiUrl('/api/jobs/verify/start'), { method: 'POST' });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || 'Could not start verification.');
 
       const verificationId = data.verification_id;
       const poller = window.setInterval(async () => {
         try {
-          const statusResponse = await fetch(`http://localhost:8000/api/search/status/${verificationId}`, { cache: 'no-store' });
+          const statusResponse = await fetch(getApiUrl(`/api/search/status/${verificationId}`), { cache: 'no-store' });
           if (!statusResponse.ok) throw new Error(`Verification status failed (${statusResponse.status})`);
           const status = await statusResponse.json();
           if (status.logs) setVerificationLogs(status.logs);
@@ -276,7 +286,7 @@ export default function Home() {
     formData.append('reuse_cv_analysis', String(reuseCvAnalysis));
 
     try {
-      const startResponse = await fetch('http://localhost:8000/api/search/start', {
+      const startResponse = await fetch(getApiUrl('/api/search/start'), {
         method: 'POST',
         body: formData,
       });
@@ -305,7 +315,7 @@ export default function Home() {
 
       const pollStatus = async () => {
         try {
-          const statusResponse = await fetch(`http://localhost:8000/api/search/status/${activeSearchId}`);
+          const statusResponse = await fetch(getApiUrl(`/api/search/status/${activeSearchId}`));
           if (statusResponse.status === 404) {
             setLoading(false);
             setProgress(0);
@@ -332,7 +342,7 @@ export default function Home() {
             setProgressLabel('Search complete');
             setSearchMessage('Search completed! Excel file ready.');
             setLoading(false);
-            setDownloadUrl(statusData.download_url ? `http://localhost:8000${statusData.download_url}` : null);
+            setDownloadUrl(statusData.download_url ? `${API_BASE_URL}${statusData.download_url}` : null);
             setTimeout(() => fetchJobs(), 500);
             return true;
           }
@@ -425,6 +435,36 @@ export default function Home() {
         (postedDateFilter === '7d' && ageDays !== null && ageDays <= 7) ||
         (postedDateFilter === 'Older' && ageDays !== null && ageDays > 7);
       return matchesText && matchesWorkingType && matchesScore && matchesSalary && matchesPostedDate;
+    })
+    .sort((a, b) => {
+      const scoreA = parseInt(a.job['Fit Score (%)']?.toString().replace('%', '') || '0', 10);
+      const scoreB = parseInt(b.job['Fit Score (%)']?.toString().replace('%', '') || '0', 10);
+      const ageDaysA = getPostedAgeDays(a.job['Posted Date']) ?? Number.MAX_SAFE_INTEGER;
+      const ageDaysB = getPostedAgeDays(b.job['Posted Date']) ?? Number.MAX_SAFE_INTEGER;
+      const companyA = String(a.job.Company || '').toLowerCase();
+      const companyB = String(b.job.Company || '').toLowerCase();
+      const locationA = String(a.job.Location || '').toLowerCase();
+      const locationB = String(b.job.Location || '').toLowerCase();
+
+      switch (jobSort) {
+        case 'fit-score-asc':
+          return scoreA - scoreB;
+        case 'newest':
+          return ageDaysA - ageDaysB;
+        case 'oldest':
+          return ageDaysB - ageDaysA;
+        case 'company-asc':
+          return companyA.localeCompare(companyB);
+        case 'company-desc':
+          return companyB.localeCompare(companyA);
+        case 'location-asc':
+          return locationA.localeCompare(locationB);
+        case 'location-desc':
+          return locationB.localeCompare(locationA);
+        case 'fit-score-desc':
+        default:
+          return scoreB - scoreA;
+      }
     });
 
   const verificationCounts = jobs.reduce<Record<string, number>>((counts, job) => {
@@ -645,7 +685,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mb-6 grid gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_180px_180px_180px_180px]">
+          <div className="mb-6 grid gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_180px_180px_180px_180px_180px]">
             <label className="text-sm text-gray-700">
               <span className="mb-2 flex items-center gap-2 font-medium"><Filter className="h-4 w-4" /> Search jobs</span>
               <input
@@ -655,6 +695,23 @@ export default function Home() {
                 placeholder="Title, company, or location"
                 className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none"
               />
+            </label>
+            <label className="text-sm text-gray-700">
+              <span className="mb-2 block font-medium">Order by</span>
+              <select
+                value={jobSort}
+                onChange={(event) => setJobSort(event.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="fit-score-desc">Highest match</option>
+                <option value="fit-score-asc">Lowest match</option>
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="company-asc">Company A–Z</option>
+                <option value="company-desc">Company Z–A</option>
+                <option value="location-asc">Location A–Z</option>
+                <option value="location-desc">Location Z–A</option>
+              </select>
             </label>
             <label className="text-sm text-gray-700">
               <span className="mb-2 block font-medium">Working type</span>
@@ -733,7 +790,7 @@ export default function Home() {
                   const score = parseInt(scoreStr);
                   
                   return (
-                    <tr key={index} className="hover:bg-gray-50 transition">
+                    <tr key={index} className="transition hover:bg-gray-200">
                       <td className="px-6 py-4 font-medium text-gray-900">{job['Job Title']}</td>
                       <td className="px-6 py-4 text-gray-700">{job['Company']}</td>
                       <td className="px-6 py-4 flex items-center gap-1 text-gray-700">
@@ -762,43 +819,66 @@ export default function Home() {
                           {job['Fit Score (%)']}
                         </span>
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4">
-                        <a
-                          href={`/jobs/${index}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mr-2 inline-block text-blue-600 hover:text-blue-800 font-medium text-xs hover:underline"
-                        >
-                          More details
-                        </a>
-                        {getPreferredJobUrl(job) ? (
-                          <a 
-                            href={getPreferredJobUrl(job) || '#'} 
-                            target="_blank" 
-                            rel="noreferrer"
-                            className="inline-block text-blue-600 hover:text-blue-800 font-medium text-xs hover:underline"
+                                      <td className="whitespace-nowrap px-6 py-4">
+                        <div className="relative inline-block">
+                          <select
+                            aria-label={`Actions for ${job['Job Title']}`}
+                            value=""
+                            onChange={(event) => {
+                              const action = event.target.value;
+                              if (!action) return;
+
+                              if (action === 'details') {
+                                window.open(`/jobs/${index}`, '_blank', 'noopener,noreferrer');
+                              } else if (action === 'link') {
+                                const preferredUrl = getPreferredJobUrl(job);
+                                if (preferredUrl) {
+                                  window.open(preferredUrl, '_blank', 'noopener,noreferrer');
+                                }
+                              } else if (action === 'delete') {
+                                void dismissJob(job);
+                              } else if (action === 'applied') {
+                                void updateApplied(job, job.Applied !== 'Yes');
+                              } else if (action === 'active') {
+                                const nextStatus = job['Verification Status'] === 'Active' ? 'Expired' : 'Active';
+                                const formData = new FormData();
+                                formData.append('job_title', job['Job Title'] || '');
+                                formData.append('company', job.Company || '');
+                                formData.append('status', nextStatus);
+
+                                fetch(getApiUrl('/api/jobs/status'), {
+                                  method: 'POST',
+                                  body: formData,
+                                })
+                                  .then(async (response) => {
+                                    if (!response.ok) {
+                                      const data = await response.json().catch(() => ({}));
+                                      throw new Error(data?.detail || 'Could not update status.');
+                                    }
+                                    setJobs((currentJobs) => currentJobs.map((currentJob) =>
+                                      currentJob['Job Title'] === job['Job Title'] && currentJob.Company === job.Company
+                                        ? { ...currentJob, 'Verification Status': nextStatus }
+                                        : currentJob
+                                    ));
+                                  })
+                                  .catch((error) => {
+                                    console.error('Error updating job status:', error);
+                                    alert(error instanceof Error ? error.message : 'Could not update job status.');
+                                  });
+                              }
+
+                              event.target.value = '';
+                            }}
+                            className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 shadow-sm outline-none transition focus:border-blue-500"
                           >
-                            View →
-                          </a>
-                        ) : (
-                          <span className="text-gray-400 text-xs">N/A</span>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => updateApplied(job, job.Applied !== 'Yes')}
-                          title={job.Applied === 'Yes' ? 'Mark as not applied' : 'Mark as applied'}
-                          className={`ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ${job.Applied === 'Yes' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600 hover:bg-green-50 hover:text-green-700'}`}
-                        >
-                          {job.Applied === 'Yes' ? 'Applied' : 'Mark applied'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => dismissJob(job)}
-                          title="Remove this job from your listings"
-                          className="ml-2 inline-flex items-center text-gray-500 hover:text-red-600"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                            <option value="">Actions</option>
+                            <option value="details">View more details</option>
+                            <option value="link" disabled={!getPreferredJobUrl(job)}>View link</option>
+                            <option value="delete">Delete</option>
+                            <option value="applied">{job.Applied === 'Yes' ? 'Mark not applied' : 'Mark applied'}</option>
+                            <option value="active">{job['Verification Status'] === 'Active' ? 'Mark expired' : 'Mark active'}</option>
+                          </select>
+                        </div>
                       </td>
                     </tr>
                   );

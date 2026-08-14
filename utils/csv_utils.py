@@ -213,6 +213,25 @@ def update_job_applied_in_csv(job_title: str, company: str, applied: bool, filen
     return updated
 
 
+def update_job_status_in_csv(job_title: str, company: str, status: str, filename: str = "job_matches.csv") -> bool:
+    """Persist a user-adjusted verification status for a saved job."""
+    jobs = import_jobs_from_csv(filename)
+    target_key = (job_title.strip().lower(), company.strip().lower())
+    updated = False
+
+    for job in jobs:
+        key = (job.get("Job Title", "").strip().lower(), job.get("Company", "").strip().lower())
+        if key == target_key:
+            normalized_status = str(status or "Not verified").strip() or "Not verified"
+            job["Verification Status"] = normalized_status
+            job["Verification Notes"] = job.get("Verification Notes") or "User-adjusted status"
+            updated = True
+
+    if updated:
+        export_jobs_to_csv(jobs, filename)
+    return updated
+
+
 def get_csv_stats(filename: str = "job_matches.csv") -> Dict[str, Any]:
     """
     Get statistics about a CSV file.

@@ -7,6 +7,7 @@ import os
 import re
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import date
 import urllib.error
 import urllib.request
@@ -25,7 +26,7 @@ from docx import Document
 # Import CSV utilities
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.csv_utils import append_jobs_to_csv, dismiss_job_in_csv, import_jobs_from_csv, update_job_applied_in_csv, update_job_url_in_csv
+from utils.csv_utils import append_jobs_to_csv, dismiss_job_in_csv, import_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
 
 # Configure logging
 logging.basicConfig(
@@ -37,7 +38,26 @@ logger = logging.getLogger(__name__)
 # Load local environment variables (.env)
 load_dotenv()
 
-app = FastAPI()
+@asynccontextmanager
+async def validate_environment(_: FastAPI):
+    """Validate required environment variables during application startup."""
+    required_keys = ["GOOGLE_API_KEY"]
+    missing = [key for key in required_keys if not os.getenv(key)]
+
+    if missing:
+        error_msg = f"Missing required environment variables: {', '.join(missing)}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+    logger.info("Environment variables validated")
+    logger.info("Direct Google GenAI client ready")
+    if os.getenv("OPENAI_API_KEY"):
+        logger.info("OpenAI fallback configured")
+
+    yield
+
+
+app = FastAPI(lifespan=validate_environment)
 
 # Add CORS middleware to allow requests from frontend
 app.add_middleware(
@@ -127,9 +147,32 @@ JOB_FIELDS = [
 MIN_FULL_DESCRIPTION_LENGTH = 500
 
 
+def is_expired_listing_text(text: str | None) -> bool:
+    """Detect obsolete or closed listings that should be marked Expired."""
+    if not text:
+        return False
+    normalized = text.lower()
+    expired_markers = (
+        "no longer accepting applications",
+        "this job is no longer accepting applications",
+        "applications are closed",
+        "applications closed",
+        "position is no longer open",
+        "this role is no longer available",
+        "job is no longer available",
+        "this listing is no longer active",
+        "expired listing",
+        "application deadline has passed",
+    )
+    return any(marker in normalized for marker in expired_markers)
+
+
 def normalize_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
     """Keep only jobs with usable listing URLs and return the canonical CSV shape."""
     description = str(job.get("Job Description") or "").strip()
+    if is_expired_listing_text(description):
+        job["Status"] = "Expired"
+        return None
     if (
         description.lower() in {"", "n/a", "not specified", "unknown"}
         or len(description) < MIN_FULL_DESCRIPTION_LENGTH
@@ -287,8 +330,16 @@ def update_verification_rows(rows: List[Dict[str, Any]]) -> None:
         result = result_map.get(key)
         if not result:
             continue
-        job["Verification Status"] = str(result.get("Verification Status") or "Not found")
-        job["Verification Notes"] = str(result.get("Verification Notes") or "Not specified")
+
+        verification_status = str(result.get("Verification Status") or "Not found").strip()
+        verification_notes = str(result.get("Verification Notes") or "Not specified").strip()
+        if is_expired_listing_text(verification_notes) or is_expired_listing_text(str(result.get("Official Listing URL") or "")):
+            verification_status = "Expired"
+        if is_expired_listing_text(str(result.get("Job Title") or "")) or is_expired_listing_text(str(result.get("Company") or "")):
+            verification_status = "Expired"
+
+        job["Verification Status"] = verification_status
+        job["Verification Notes"] = verification_notes or "Not specified"
         job["Last Verified"] = date.today().isoformat()
         official_url = str(result.get("Official Listing URL") or "").strip()
         if official_url.startswith("http"):
@@ -312,7 +363,10 @@ async def run_saved_job_verification(verification_id: str) -> None:
             instructions = """
 You verify saved job records using Google Search. Check the exact listing URL, then search the
 employer's official careers website for the same exact title and location. Classify each as Active,
-Expired, Blocked, or Not found. Never mark Active from a generic careers homepage. Return ONLY a
+Expired, Blocked, or Not found. If the LinkedIn or employer page says "No longer accepting
+applications", "applications are closed", "position is no longer open", or gives any similar closure
+message, mark the job as Expired and do not treat it as an active listing. Never mark Active from a
+generic careers homepage or a LinkedIn page that explicitly says applications are closed. Return ONLY a
 JSON array with Job Title, Company, Verification Status, Verification Notes, and Official Listing URL.
 """
             prompt = "Verify these exact saved jobs:\n" + json.dumps([
@@ -472,25 +526,6 @@ async def run_search_pipeline(
         ACTIVE_SEARCHES[search_id]["message"] = str(exc)
         ACTIVE_SEARCHES[search_id]["error"] = str(exc)
         update_search_status(search_id, f"Unexpected error: {exc}", 0)
-
-
-@app.on_event("startup")
-async def validate_environment() -> None:
-    """Validate required environment variables at application startup."""
-    required_keys = ["GOOGLE_API_KEY"]
-    missing = [key for key in required_keys if not os.getenv(key)]
-    
-    if missing:
-        error_msg = f"Missing required environment variables: {', '.join(missing)}"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg)
-    
-    logger.info("Environment variables validated")
-    
-    logger.info("Direct Google GenAI client ready")
-    if os.getenv("OPENAI_API_KEY"):
-        logger.info("OpenAI fallback configured")
-
 
 
 async def call_gemini_with_retry(
@@ -736,35 +771,38 @@ async def run_incremental_job_finder(
         CRITICAL REQUIREMENTS:
         1. Only return jobs posted within the last 7 days
         2. Filter out any jobs older than 1 week
-        3. Match candidate skills from profile: {cv_summary[:300]}...
-          4. Return the exact direct URL of each job listing from the search result; never use N/A,
+          3. If the listing page says "No longer accepting applications", "applications are closed",
+              "position is no longer open", "role is no longer active", or any equivalent closure note,
+              treat it as Expired and do not save it as an active job. Ignore these listings entirely.
+        4. Match candidate skills from profile: {cv_summary[:300]}...
+          5. Return the exact direct URL of each job listing from the search result; never use N/A,
               a company homepage, a search page, or a fabricated URL. If no direct listing URL is
               available, include the job with "Not specified" and mark the URL status accordingly.
-          5. Extract the posting date when visible. Use "Not specified" only when the listing does
+          6. Extract the posting date when visible. Use "Not specified" only when the listing does
               not show a date. Normalize working type to exactly Remote, Hybrid, On-site, or
               Not specified.
-          5a. Extract the salary or compensation exactly as shown. Use "Not specified" when it is
+          6a. Extract the salary or compensation exactly as shown. Use "Not specified" when it is
               not available; do not estimate or invent salary.
-          6. Select the best matching CV filename from this list and return it exactly:
+          7. Select the best matching CV filename from this list and return it exactly:
               [{", ".join(cv_names)}]
-          7. Provide a concrete recommendation for tailoring that selected CV to this job,
+          8. Provide a concrete recommendation for tailoring that selected CV to this job,
               including which skills, experience, or keywords to emphasize.
-          8. Extract the complete job description from the original listing, preserving all
+          9. Extract the complete job description from the original listing, preserving all
               available sections, paragraphs, responsibilities, requirements, qualifications,
               benefits, and other visible content. Do not summarize or shorten it. Do not invent
               details. The description must contain at least 500 characters of source text. If the
               full description cannot be retrieved, do not return that job.
-             9. Search across Google results from LinkedIn, Indeed, IrishJobs, Greenhouse,
-                 company career sites, and other relevant job boards. If the result comes from
-                 LinkedIn, Indeed, IrishJobs, or another job board, search
-                 the employer's official careers domain for the same role and location. Prefer the
-                 official employer listing URL in the URL field when it exists. Do not treat a company
-                 careers homepage, a generic Greenhouse board, or a different job ID as verification.
-                 The official page must show the exact job title and employer; otherwise mark it No.
-          10. Set Listing Source to Official company website or the job-board name. Set Official
+          10. Search across Google results from LinkedIn, Indeed, IrishJobs, Greenhouse,
+               company career sites, and other relevant job boards. If the result comes from
+               LinkedIn, Indeed, IrishJobs, or another job board, search the employer's official
+               careers domain for the same role and location. Prefer the official employer listing
+               URL in the URL field when it exists. Do not treat a company careers homepage, a
+               generic Greenhouse board, or a different job ID as verification. The official page
+               must show the exact job title and employer; otherwise mark it No.
+          11. Set Listing Source to Official company website or the job-board name. Set Official
               Listing Verified to Yes only when the exact role is found on the official employer
               site; otherwise set it to No and put Not specified in Official Listing URL.
-          11. Always return Original Listing URL as the exact direct URL where the job was found.
+          12. Always return Original Listing URL as the exact direct URL where the job was found.
               Return the official URL in URL when verified; otherwise return the original job-board
               URL in URL.
         
@@ -1123,6 +1161,22 @@ async def update_job_applied(
     if not updated:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse({"updated": True, "applied": applied})
+
+
+@app.post("/api/jobs/status")
+async def update_job_status(
+    job_title: str = Form(...),
+    company: str = Form(...),
+    status: str = Form(...),
+) -> JSONResponse:
+    """Persist a manual verification status for a job row."""
+    if not status.strip():
+        raise HTTPException(status_code=400, detail="Status is required")
+
+    updated = update_job_status_in_csv(job_title, company, status.strip(), "job_matches.csv")
+    if not updated:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JSONResponse({"updated": True, "status": status.strip()})
 
 
 @app.post("/api/jobs/verify/start")
