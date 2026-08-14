@@ -506,11 +506,13 @@ export default function Home() {
       }
     });
 
-  const verificationCounts = jobs.reduce<Record<string, number>>((counts, job) => {
+  const verificationCounts = jobs
+    .filter((job) => job.Applied !== 'Yes')
+    .reduce<Record<string, number>>((counts, job) => {
     const status = job['Verification Status'] || 'Not verified';
     counts[status] = (counts[status] || 0) + 1;
     return counts;
-  }, {});
+    }, {});
   const openJobs = filteredJobs.filter(({ job }) => job.Applied !== 'Yes');
   const appliedJobs = filteredJobs.filter(({ job }) => job.Applied === 'Yes');
 

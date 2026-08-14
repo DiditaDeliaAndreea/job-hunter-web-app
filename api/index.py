@@ -795,6 +795,149 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     logger.info("✅ Agent 1 completed: Candidate profile created")
     return response
 
+@app.post("/api/jobs/tailor-cv")
+async def tailor_cv_for_job(
+    cv_file: UploadFile = File(...),
+    job_title: str = Form(...),
+    company: str = Form(...),
+    job_description: str = Form(...),
+    user_prompt: str = Form(""),
+) -> JSONResponse:
+    """Generate a truthful, keyword-aligned CV draft for one saved job."""
+    content = await cv_file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="The selected CV file is empty.")
+
+    cv_text = await extract_cv_text_from_bytes(cv_file.filename or "uploaded-cv", content)
+    instructions = """
+You tailor a candidate's CV for one specific job. Preserve the candidate's actual experience and
+never invent employers, dates, achievements, tools, certifications, responsibilities, or metrics.
+Your primary goal is strong ATS alignment without keyword stuffing. Work in two explicit passes:
+
+PASS 1 - JOB DESCRIPTION KEYWORD ANALYSIS:
+Create an internal, prioritized keyword map from the job description. Identify meaningful ATS terms,
+not filler words: required hard skills, software and tools, programming languages, methodologies,
+certifications, domain terminology, job-specific responsibilities, seniority terms, deliverables,
+and action verbs. Distinguish must-have keywords from useful secondary keywords and note important
+phrases that an ATS may match exactly.
+
+PASS 2 - CV EVIDENCE MATCHING AND REWRITE:
+Audit the source CV against that keyword map. Include as many must-have and secondary keywords as
+possible, but only when the source CV provides truthful evidence for them. Use exact job-description
+wording when supported, and use accurate synonyms when they describe the same experience. Prioritize
+the strongest supported matches near the top, in the summary, skills, and relevant experience
+bullets. Rewrite existing bullets to lead with clear action verbs, scope, tools, and measurable
+outcomes already present in the source CV. Never add a keyword merely because it would improve ATS
+matching if the CV does not support it.
+
+Return only a complete CV draft, ready to paste into the same document format as the source CV.
+Preserve the source CV's exact section names, section order, heading wording, job-entry order,
+bullet style, indentation, paragraph breaks, and spacing pattern wherever possible. Keep headings,
+emphasis markers, capitalization, and date/location lines in the same style as the source. If the
+source uses bold headings or labels, represent that emphasis with the same visible convention in
+the output; do not replace it with a new heading style. Preserve the original bullet character
+or marker rather than switching between bullets and paragraphs.
+
+Keep the document ATS-safe and single-column: do not use tables, columns, text boxes, headers/footers,
+icons, graphics, emojis, decorative symbols, unusual fonts, hyperlinks disguised as text, or layout
+instructions. Do not rename sections to generic headings when the source already has clear headings.
+Keep the wording concise and scannable. Do not include a cover letter, keyword list detached from
+evidence, match score, editing commentary, or claims unsupported by the source CV. If a job
+requirement is not supported, do not add it; leave it out or make the gap clear rather than guessing.
+"""
+    prompt = f"""
+Target job: {job_title}
+Company: {company}
+
+USER'S DIRECT TAILORING REQUEST:
+{user_prompt.strip() or 'No additional request. Follow the ATS and source-format instructions above.'}
+
+JOB DESCRIPTION:
+{job_description}
+
+SOURCE CV:
+{cv_text}
+
+ATS CHECK BEFORE RETURNING:
+- Every keyword added must be supported by the source CV.
+- The most relevant supported job-description keywords must appear naturally in the summary,
+  skills, or experience sections.
+- The output must remain plain text, single-column, and machine-readable.
+- Preserve the source CV's section names, ordering, bullets, line breaks, spacing, and emphasis style.
+- Preserve factual names, dates, employers, and qualifications from the source CV.
+"""
+    try:
+        tailored_cv = await call_gemini_with_retry(
+            instructions,
+            prompt,
+            use_google_search=False,
+            max_retries=3,
+            initial_delay=5,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"CV tailoring failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=503, detail="Could not generate the tailored CV.") from exc
+
+    return JSONResponse({"tailored_cv": tailored_cv})
+
+
+@app.post("/api/jobs/tailor-cv/chat")
+async def ask_cv_tailoring_question(
+    cv_file: UploadFile = File(...),
+    job_title: str = Form(...),
+    company: str = Form(...),
+    job_description: str = Form(...),
+    user_prompt: str = Form(...),
+) -> JSONResponse:
+    """Answer a direct CV-tailoring question for one job without generating a full CV."""
+    if not user_prompt.strip():
+        raise HTTPException(status_code=400, detail="Ask a tailoring question first.")
+
+    content = await cv_file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="The selected CV file is empty.")
+
+    cv_text = await extract_cv_text_from_bytes(cv_file.filename or "uploaded-cv", content)
+    instructions = """
+You are a CV tailoring advisor. Answer the user's direct question using the job description and source
+CV. First identify meaningful ATS keywords and requirements in the job description, then check which
+are supported by the CV. Give specific, actionable advice and exact suggested wording where useful.
+Never invent experience, tools, employers, dates, certifications, metrics, or achievements. Preserve
+the source CV's section names, bullet style, spacing pattern, and emphasis conventions. Be concise.
+This is a one-request interaction: do not claim that the user's prompt trains, fine-tunes, or changes
+the underlying model.
+"""
+    prompt = f"""
+Target job: {job_title}
+Company: {company}
+
+USER QUESTION:
+{user_prompt.strip()}
+
+JOB DESCRIPTION:
+{job_description}
+
+SOURCE CV:
+{cv_text}
+"""
+    try:
+        answer = await call_gemini_with_retry(
+            instructions,
+            prompt,
+            use_google_search=False,
+            max_retries=3,
+            initial_delay=5,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"CV tailoring chat failed: {type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=503, detail="Could not answer the tailoring question.") from exc
+
+    return JSONResponse({"answer": answer})
+
 
 async def run_incremental_job_finder(
     cv_summary: str,

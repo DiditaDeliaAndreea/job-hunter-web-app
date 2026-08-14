@@ -44,12 +44,54 @@ function getPreferredJobUrl(job: JobRecord): string | null {
   return /^https?:\/\/\S+$/i.test(sourceUrl) ? sourceUrl : null;
 }
 
+const ATS_STOP_WORDS = new Set([
+  'about', 'after', 'also', 'with', 'from', 'have', 'into', 'their', 'there', 'these', 'those',
+  'this', 'that', 'will', 'your', 'they', 'them', 'were', 'when', 'where', 'which', 'while',
+  'work', 'working', 'role', 'roles', 'team', 'teams', 'using', 'used', 'years', 'must', 'should',
+]);
+
+function getComparableWords(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .replace(/<[^>]*>/g, ' ')
+      .match(/[a-z0-9][a-z0-9+#./-]{2,}/g) || []
+  );
+}
+
+function renderHighlightedTailoredCv(tailoredCv: string, originalCv: string, jobDescription: string) {
+  const originalWords = getComparableWords(originalCv);
+  const jobKeywords = [...getComparableWords(jobDescription)].filter(
+    (word) => !ATS_STOP_WORDS.has(word) && word.length >= 4
+  );
+  const addedKeywords = new Set(jobKeywords.filter((word) => !originalWords.has(word)));
+
+  return tailoredCv.split(/(\s+)/).map((part, index) => {
+    const normalizedPart = part.toLowerCase().replace(/[^a-z0-9+#./-]/g, '');
+    if (!normalizedPart || !addedKeywords.has(normalizedPart)) {
+      return <span key={`${part}-${index}`}>{part}</span>;
+    }
+    return (
+      <mark key={`${part}-${index}`} className="rounded bg-green-200 px-0.5 text-green-950" title="ATS keyword added from the job description">
+        {part}
+      </mark>
+    );
+  });
+}
+
 export default function JobDetailsPage({ params }: { params: Promise<{ id: string }> }) {
   const [job, setJob] = useState<JobRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [recommendedCvUrl, setRecommendedCvUrl] = useState<string | null>(null);
   const [recommendedCvHtml, setRecommendedCvHtml] = useState<string | null>(null);
+  const [recommendedCvFile, setRecommendedCvFile] = useState<File | null>(null);
+  const [tailoredCv, setTailoredCv] = useState('');
+  const [generatingTailoredCv, setGeneratingTailoredCv] = useState(false);
+  const [tailoredCvMessage, setTailoredCvMessage] = useState('');
+  const [cvPrompt, setCvPrompt] = useState('');
+  const [cvChatAnswer, setCvChatAnswer] = useState('');
+  const [askingCvQuestion, setAskingCvQuestion] = useState(false);
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [urlMessage, setUrlMessage] = useState('');
@@ -96,6 +138,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     const recommendedCv = job?.['Recommended CV'];
     setRecommendedCvUrl(null);
     setRecommendedCvHtml(null);
+    setRecommendedCvFile(null);
 
     if (!recommendedCv || recommendedCv === 'Not specified') {
       setRecommendedCvUrl(null);
@@ -106,6 +149,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     getUploadedCv(recommendedCv)
       .then(async (file) => {
         if (!active || !file) return;
+        setRecommendedCvFile(file);
 
         if (file.name.toLowerCase().endsWith('.docx')) {
           const result = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() });
@@ -158,6 +202,33 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     setEditingUrl(true);
   };
 
+  const generateTailoredCv = async () => {
+    if (!job || !recommendedCvFile) {
+      setTailoredCvMessage('The recommended CV is not available in browser storage.');
+      return;
+    }
+
+    setGeneratingTailoredCv(true);
+    setTailoredCvMessage('Generating an ATS-friendly CV with job-specific keywords...');
+    try {
+      const formData = new FormData();
+      formData.append('cv_file', recommendedCvFile);
+      formData.append('job_title', job['Job Title'] || '');
+      formData.append('company', job.Company || '');
+      formData.append('job_description', job['Job Description'] || '');
+      formData.append('user_prompt', cvPrompt);
+      const response = await fetch(getApiUrl('/api/jobs/tailor-cv'), { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not generate the tailored CV.');
+      setTailoredCv(data.tailored_cv || '');
+      setTailoredCvMessage('ATS-friendly CV generated. Review every detail before using it.');
+    } catch (generationError) {
+      setTailoredCvMessage(generationError instanceof Error ? generationError.message : 'Could not generate the tailored CV.');
+    } finally {
+      setGeneratingTailoredCv(false);
+    }
+  };
+
   const saveUrl = async () => {
     if (!job || !urlInput.trim()) {
       setUrlMessage('Enter a valid listing URL.');
@@ -192,6 +263,28 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     }
   };
 
+  const askCvQuestion = async () => {
+    if (!job || !recommendedCvFile || !cvPrompt.trim()) return;
+    setAskingCvQuestion(true);
+    setCvChatAnswer('');
+    try {
+      const formData = new FormData();
+      formData.append('cv_file', recommendedCvFile);
+      formData.append('job_title', job['Job Title'] || '');
+      formData.append('company', job.Company || '');
+      formData.append('job_description', job['Job Description'] || '');
+      formData.append('user_prompt', cvPrompt);
+      const response = await fetch(getApiUrl('/api/jobs/tailor-cv/chat'), { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not answer the tailoring question.');
+      setCvChatAnswer(data.answer || 'No answer was returned.');
+    } catch (chatError) {
+      setCvChatAnswer(chatError instanceof Error ? chatError.message : 'Could not answer the tailoring question.');
+    } finally {
+      setAskingCvQuestion(false);
+    }
+  };
+
   return (
     <main className="min-h-screen w-full px-4 py-6 md:px-8 md:py-8">
       <Link href="/" className="inline-flex items-center gap-2 text-sm font-medium text-blue-600 hover:underline">
@@ -214,8 +307,8 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
         </div>
       </header>
 
-      <div className="grid gap-6 py-8 lg:grid-cols-2 lg:items-start">
-        <section className="order-2 rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:order-1 lg:sticky lg:top-6">
+      <div className="grid gap-6 py-8 lg:grid-cols-1 lg:items-start">
+        <section className="order-2 rounded-xl border border-gray-200 bg-white p-6 shadow-sm lg:order-1">
           <div className="mb-3 flex items-center gap-2">
             <FileText className="h-5 w-5 text-blue-600" />
             <h2 className="text-xl font-semibold text-gray-900">Job description</h2>
@@ -232,43 +325,67 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
             <p className="whitespace-pre-wrap leading-7 text-gray-700">{job['Match Reasons'] || 'No match explanation was provided.'}</p>
           </section>
 
-          <section className="rounded-xl border border-blue-100 bg-blue-50 p-6">
-            <div className="mb-3 flex items-center gap-2">
-              <Briefcase className="h-5 w-5 text-blue-700" />
-              <h2 className="text-xl font-semibold text-gray-900">Recommended CV</h2>
-            </div>
-            <p className="font-medium text-blue-900">
-              {recommendedCvUrl ? (
-                <a
-                  href={recommendedCvUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="underline hover:text-blue-700"
-                >
-                  {job['Recommended CV']}
-                </a>
-              ) : recommendedCvHtml ? (
-                <a href="#cv-preview" className="underline hover:text-blue-700">
-                  {job['Recommended CV']}
-                </a>
-              ) : (
-                job['Recommended CV'] || 'Not specified'
-              )}
-            </p>
-            {recommendedCvUrl && <p className="mt-2 text-sm text-blue-800">Open the recommended CV in a new tab</p>}
-            {recommendedCvHtml && (
-              <div id="cv-preview" className="mt-4 max-h-[70vh] scroll-mt-6 overflow-y-auto rounded-lg border border-blue-200 bg-white p-6 text-left text-gray-800 [&_h1]:mb-4 [&_h1]:text-2xl [&_h2]:mb-3 [&_h2]:mt-5 [&_h2]:text-xl [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3">
-                <div dangerouslySetInnerHTML={{ __html: recommendedCvHtml }} />
+          <section className="rounded-xl border border-indigo-100 bg-indigo-50 p-6">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="mb-2 flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-indigo-700" />
+                  <h2 className="text-xl font-semibold text-gray-900">CV workspace</h2>
+                </div>
+                <p className="text-sm text-gray-700">Compare your recommended CV with an AI-tailored version using keywords from this job.</p>
               </div>
-            )}
-          </section>
-
-          <section className="rounded-xl border border-amber-100 bg-amber-50 p-6">
-            <div className="mb-3 flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-amber-700" />
-              <h2 className="text-xl font-semibold text-gray-900">CV tailoring recommendation</h2>
+              <button
+                type="button"
+                onClick={generateTailoredCv}
+                disabled={generatingTailoredCv || !recommendedCvFile}
+                className="inline-flex items-center gap-2 rounded-md bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Sparkles className="h-4 w-4" />
+                {generatingTailoredCv ? 'Generating...' : 'Generate tailored CV'}
+              </button>
             </div>
-            <p className="whitespace-pre-wrap leading-7 text-gray-700">{job['CV Tailoring Recommendation'] || 'No tailoring recommendation was provided yet.'}</p>
+            {tailoredCvMessage && <p className="mb-4 text-sm text-indigo-900">{tailoredCvMessage}</p>}
+            <div className="mb-4 rounded-lg border border-indigo-200 bg-white p-4">
+              <label htmlFor="cv-tailoring-prompt" className="mb-2 block text-sm font-semibold text-gray-900">Ask AI how to tailor your CV</label>
+              <textarea
+                id="cv-tailoring-prompt"
+                value={cvPrompt}
+                onChange={(event) => setCvPrompt(event.target.value)}
+                rows={3}
+                placeholder="For example: emphasize my incident management experience and keep the original section names."
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:border-indigo-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => void askCvQuestion()}
+                disabled={askingCvQuestion || !recommendedCvFile || !cvPrompt.trim()}
+                className="mt-3 rounded-md border border-indigo-300 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {askingCvQuestion ? 'Asking AI...' : 'Ask AI'}
+              </button>
+              <p className="mt-2 text-xs text-gray-500">Your prompt is used as instructions for this tailoring request and is not used to train the model.</p>
+              {cvChatAnswer && <div className="mt-3 whitespace-pre-wrap rounded-md bg-indigo-50 p-3 text-sm leading-6 text-indigo-950">{cvChatAnswer}</div>}
+            </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-lg border border-blue-200 bg-white p-5">
+                <h3 className="mb-3 font-semibold text-gray-900">Recommended CV</h3>
+                <p className="mb-3 text-sm text-gray-500">{job['Recommended CV'] || 'Not specified'}</p>
+                {recommendedCvHtml ? (
+                  <div className="max-h-[65vh] overflow-y-auto text-sm text-gray-800 [&_h1]:mb-4 [&_h1]:text-2xl [&_h2]:mb-3 [&_h2]:mt-5 [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3" dangerouslySetInnerHTML={{ __html: recommendedCvHtml }} />
+                ) : <p className="text-sm text-gray-500">Preview is not available for this file type.</p>}
+              </div>
+              <div className="rounded-lg border border-indigo-200 bg-white p-5">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="font-semibold text-gray-900">Tailored CV</h3>
+                  <span className="inline-flex items-center gap-2 text-xs text-green-800">
+                    <span className="h-3 w-3 rounded-sm bg-green-200" aria-hidden="true" /> Added ATS keywords
+                  </span>
+                </div>
+                {tailoredCv ? (
+                  <pre className="max-h-[65vh] overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-6 text-gray-800">{renderHighlightedTailoredCv(tailoredCv, recommendedCvHtml || '', job['Job Description'] || '')}</pre>
+                ) : <p className="text-sm text-gray-500">Generate a tailored version to see the suggested wording and keywords here.</p>}
+              </div>
+            </div>
           </section>
 
           <section className="border-t border-gray-200 pt-6">
