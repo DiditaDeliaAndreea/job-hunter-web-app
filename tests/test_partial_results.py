@@ -10,8 +10,7 @@ import api.index as api
 @pytest.mark.asyncio
 async def test_call_gemini_uses_google_search_tool_when_requested(monkeypatch):
     class FakeClient:
-        def __init__(self, api_key=None):
-            self.api_key = api_key
+        def __init__(self):
             self.last_config = None
             self.last_model = None
             self.last_contents = None
@@ -27,9 +26,8 @@ async def test_call_gemini_uses_google_search_tool_when_requested(monkeypatch):
 
     fake_client = FakeClient()
     FakeClient._current_client = fake_client
-    fake_genai = SimpleNamespace(Client=lambda api_key=None: fake_client)
+    fake_genai = SimpleNamespace(Client=lambda **kwargs: fake_client if kwargs else fake_client)
     monkeypatch.setattr(api, 'genai', fake_genai, raising=False)
-    monkeypatch.setattr(api, 'gemini_llm', None)
 
     result = await api.call_gemini_with_retry('instructions', 'prompt', use_google_search=True)
 
@@ -47,6 +45,7 @@ async def test_partial_batch_results_are_persisted_before_error(monkeypatch):
     persisted = []
 
     async def fake_call_gemini_with_retry(instructions, prompt, use_google_search=False, max_retries=3, initial_delay=8):
+        del instructions, prompt, use_google_search, max_retries, initial_delay
         calls["count"] += 1
         if calls["count"] == 1:
             return json.dumps([
@@ -57,7 +56,9 @@ async def test_partial_batch_results_are_persisted_before_error(monkeypatch):
                     "Fit Score (%)": "92%",
                     "Match Reasons": "Strong QA background",
                     "Status": "Active",
-                    "URL": "https://example.com/job-1"
+                        "URL": "https://example.com/job-1",
+                        "Original Listing URL": "https://example.com/job-1",
+                        "Job Description": "A detailed QA engineering role description covering testing, automation, defect triage, regression coverage, collaboration with software engineers, test planning, documentation, and release validation. " * 5
                 }
             ])
         raise HTTPException(status_code=503, detail="503 Service Unavailable")

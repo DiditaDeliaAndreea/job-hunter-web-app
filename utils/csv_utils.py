@@ -30,6 +30,7 @@ CSV_FIELDS = [
     "URL Check Status",
     "User Dismissed",
     "Applied",
+    "User Status Override",
     "Verification Status",
     "Verification Notes",
     "Last Verified",
@@ -214,7 +215,7 @@ def update_job_applied_in_csv(job_title: str, company: str, applied: bool, filen
 
 
 def update_job_status_in_csv(job_title: str, company: str, status: str, filename: str = "job_matches.csv") -> bool:
-    """Persist a user-adjusted verification status for a saved job."""
+    """Persist a user-adjusted verification status and protect it from AI verification."""
     jobs = import_jobs_from_csv(filename)
     target_key = (job_title.strip().lower(), company.strip().lower())
     updated = False
@@ -224,6 +225,7 @@ def update_job_status_in_csv(job_title: str, company: str, status: str, filename
         if key == target_key:
             normalized_status = str(status or "Not verified").strip() or "Not verified"
             job["Verification Status"] = normalized_status
+            job["User Status Override"] = "Yes"
             job["Verification Notes"] = job.get("Verification Notes") or "User-adjusted status"
             updated = True
 

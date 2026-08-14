@@ -7,3 +7,5 @@ pypdf==4.2.0
 google-genai
 openai
 python-dotenv
+pytest
+pytest-asyncio

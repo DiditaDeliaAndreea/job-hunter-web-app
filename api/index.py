@@ -140,6 +140,7 @@ JOB_FIELDS = [
     "URL Check Status",
     "User Dismissed",
     "Applied",
+    "User Status Override",
     "Verification Status",
     "Verification Notes",
     "Last Verified",
@@ -386,7 +387,13 @@ async def run_saved_job_verification(verification_id: str) -> None:
     """Check saved roles in AI batches and persist results after each batch."""
     try:
         jobs = import_jobs_from_csv("job_matches.csv")
-        jobs = [job for job in jobs if job.get("User Dismissed", "").lower() != "yes"]
+        jobs = [
+            job for job in jobs
+            if job.get("User Dismissed", "").lower() != "yes"
+            and job.get("Applied", "").strip().lower() != "yes"
+            and job.get("Verification Status", "").strip().lower() != "active"
+            and job.get("User Status Override", "").lower() != "yes"
+        ]
         batches = [jobs[index:index + 5] for index in range(0, len(jobs), 5)]
         for batch_index, batch in enumerate(batches, 1):
             progress = int(batch_index / max(1, len(batches)) * 90)
@@ -772,6 +779,31 @@ async def run_incremental_job_finder(
     batch_size = 5
     roles_batches = [target_roles[i:i + batch_size] for i in range(0, len(target_roles), batch_size)]
     excluded_str = ", ".join(excluded_roles)
+    existing_jobs = import_jobs_from_csv("job_matches.csv")
+    saved_job_keys = {
+        (
+            str(job.get("Job Title", "")).strip().casefold(),
+            str(job.get("Company", "")).strip().casefold(),
+        )
+        for job in existing_jobs
+    }
+    existing_jobs_summary = "\n".join(
+        f"- {job.get('Job Title', 'Not specified')} — {job.get('Company', 'Not specified')}"
+        for job in existing_jobs
+    ) or "None"
+
+    def keep_new_jobs(candidate_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        unique_jobs = []
+        for job in candidate_jobs:
+            key = (
+                str(job.get("Job Title", "")).strip().casefold(),
+                str(job.get("Company", "")).strip().casefold(),
+            )
+            if key in saved_job_keys:
+                continue
+            saved_job_keys.add(key)
+            unique_jobs.append(job)
+        return unique_jobs
     
     all_jobs = []
     
@@ -806,6 +838,9 @@ async def run_incremental_job_finder(
         CRITICAL REQUIREMENTS:
         1. Only return jobs posted within the last 7 days
         2. Filter out any jobs older than 1 week
+          2a. Before returning any result, compare its normalized job title and company against the
+              complete saved-job ledger below. Do not return duplicates, even if the new URL or source
+              is different. Review the entire ledger, not only the current search batch.
           3. If the listing page says "No longer accepting applications", "applications are closed",
               "position is no longer open", "role is no longer active", or any equivalent closure note,
               treat it as Expired and do not save it as an active job. Ignore these listings entirely.
@@ -843,6 +878,8 @@ async def run_incremental_job_finder(
         12. Always return Original Listing URL as the exact direct URL where the job was found.
               Return the official URL in URL when verified; otherwise return the original job-board
               URL in URL.
+          13. Existing saved-job ledger for duplicate checking:
+{existing_jobs_summary}
         
         Output ONLY a valid JSON array (no markdown, no ```json wrapper):
         [
@@ -871,6 +908,8 @@ async def run_incremental_job_finder(
             f"Search Google for job listings in {TARGET_LOCATION} "
             f"for these roles: {batch_roles_str}. "
             f"Only include jobs posted in the last 7 days. "
+            f"Do not return any title/company pair already present in the complete saved-job ledger "
+            f"included in your instructions. "
             f"Match them against this candidate profile:\n{cv_summary}"
         )
         
@@ -890,6 +929,7 @@ async def run_incremental_job_finder(
                     valid_jobs = [normalize_job(job) for job in batch_jobs if isinstance(job, dict)]
                     valid_jobs = [job for job in valid_jobs if job is not None]
                     valid_jobs = await validate_listing_urls(valid_jobs)
+                    valid_jobs = keep_new_jobs(valid_jobs)
                     all_jobs.extend(valid_jobs)
                     if len(valid_jobs) > 0:
                         append_jobs_to_csv(valid_jobs, "job_matches.csv")
@@ -922,6 +962,7 @@ async def run_incremental_job_finder(
                 valid_jobs = [normalize_job(job) for job in recovered_jobs]
                 valid_jobs = [job for job in valid_jobs if job is not None]
                 valid_jobs = await validate_listing_urls(valid_jobs)
+                valid_jobs = keep_new_jobs(valid_jobs)
                 all_jobs.extend(valid_jobs)
                 if valid_jobs:
                     append_jobs_to_csv(valid_jobs, "job_matches.csv")

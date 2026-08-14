@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
 import * as XLSX from 'xlsx';
-import { Upload, FileDown, Loader2, Briefcase, MapPin, X, RefreshCw, Filter, Trash2 } from 'lucide-react';
+import { Upload, FileDown, Loader2, Briefcase, MapPin, X, RefreshCw, Filter, Trash2, ArrowUpDown, BarChart3 } from 'lucide-react';
 import { saveUploadedCvs } from '../utils/browserStorage';
 
 const ROLE_PREFERENCES_STORAGE_KEY = 'careermatch-role-preferences';
@@ -71,6 +72,7 @@ export default function Home() {
   const [minimumScore, setMinimumScore] = useState('0');
   const [salaryFilter, setSalaryFilter] = useState('All');
   const [postedDateFilter, setPostedDateFilter] = useState('All');
+  const [appliedFilter, setAppliedFilter] = useState('All');
   const [verifyingJobs, setVerifyingJobs] = useState(false);
   const [verificationProgress, setVerificationProgress] = useState(0);
   const [verificationMessage, setVerificationMessage] = useState('');
@@ -413,6 +415,10 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  const toggleHeaderSort = (ascendingSort: string, descendingSort: string) => {
+    setJobSort((currentSort) => currentSort === ascendingSort ? descendingSort : ascendingSort);
+  };
+
   const filteredJobs = jobs
     .map((job, index) => ({ job, index }))
     .filter(({ job }) => {
@@ -434,7 +440,10 @@ export default function Home() {
         (postedDateFilter === '3d' && ageDays !== null && ageDays <= 3) ||
         (postedDateFilter === '7d' && ageDays !== null && ageDays <= 7) ||
         (postedDateFilter === 'Older' && ageDays !== null && ageDays > 7);
-      return matchesText && matchesWorkingType && matchesScore && matchesSalary && matchesPostedDate;
+      const matchesApplied = appliedFilter === 'All' ||
+        (appliedFilter === 'Applied' && job.Applied === 'Yes') ||
+        (appliedFilter === 'Not applied' && job.Applied !== 'Yes');
+      return matchesText && matchesWorkingType && matchesScore && matchesSalary && matchesPostedDate && matchesApplied;
     })
     .sort((a, b) => {
       const scoreA = parseInt(a.job['Fit Score (%)']?.toString().replace('%', '') || '0', 10);
@@ -445,8 +454,22 @@ export default function Home() {
       const companyB = String(b.job.Company || '').toLowerCase();
       const locationA = String(a.job.Location || '').toLowerCase();
       const locationB = String(b.job.Location || '').toLowerCase();
+      const titleA = String(a.job['Job Title'] || '').toLowerCase();
+      const titleB = String(b.job['Job Title'] || '').toLowerCase();
+      const workingTypeA = String(a.job['Working Type'] || '').toLowerCase();
+      const workingTypeB = String(b.job['Working Type'] || '').toLowerCase();
+      const salaryA = String(a.job.Salary || '').toLowerCase();
+      const salaryB = String(b.job.Salary || '').toLowerCase();
+      const verificationA = String(a.job['Verification Status'] || 'Not verified').toLowerCase();
+      const verificationB = String(b.job['Verification Status'] || 'Not verified').toLowerCase();
+      const appliedA = String(a.job.Applied || 'No').toLowerCase();
+      const appliedB = String(b.job.Applied || 'No').toLowerCase();
 
       switch (jobSort) {
+        case 'title-asc':
+          return titleA.localeCompare(titleB);
+        case 'title-desc':
+          return titleB.localeCompare(titleA);
         case 'fit-score-asc':
           return scoreA - scoreB;
         case 'newest':
@@ -461,6 +484,22 @@ export default function Home() {
           return locationA.localeCompare(locationB);
         case 'location-desc':
           return locationB.localeCompare(locationA);
+        case 'working-type-asc':
+          return workingTypeA.localeCompare(workingTypeB);
+        case 'working-type-desc':
+          return workingTypeB.localeCompare(workingTypeA);
+        case 'salary-asc':
+          return salaryA.localeCompare(salaryB);
+        case 'salary-desc':
+          return salaryB.localeCompare(salaryA);
+        case 'verification-asc':
+          return verificationA.localeCompare(verificationB);
+        case 'verification-desc':
+          return verificationB.localeCompare(verificationA);
+        case 'applied-asc':
+          return appliedA.localeCompare(appliedB);
+        case 'applied-desc':
+          return appliedB.localeCompare(appliedA);
         case 'fit-score-desc':
         default:
           return scoreB - scoreA;
@@ -472,12 +511,17 @@ export default function Home() {
     counts[status] = (counts[status] || 0) + 1;
     return counts;
   }, {});
+  const openJobs = filteredJobs.filter(({ job }) => job.Applied !== 'Yes');
+  const appliedJobs = filteredJobs.filter(({ job }) => job.Applied === 'Yes');
 
   return (
     <main className="min-h-screen w-full px-4 py-6 font-sans md:px-8 lg:px-10">
       <header className="mb-10 text-center">
         <h1 className="text-4xl font-bold mb-2 tracking-tight">CareerMatch</h1>
         <p className="text-gray-500">Upload your CV to discover roles that match your experience.</p>
+        <Link href="/stats" className="mt-4 inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100">
+          <BarChart3 className="h-4 w-4" /> View stats
+        </Link>
       </header>
 
       <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 mb-10">
@@ -667,7 +711,7 @@ export default function Home() {
       {jobs.length > 0 && (
         <section>
           <div className="flex justify-between items-center mb-6">
-            <h2 className="text-2xl font-bold">📋 Job Matches ({filteredJobs.length} of {jobs.length})</h2>
+            <h2 className="text-2xl font-bold">📋 Open Jobs ({openJobs.length} of {jobs.length})</h2>
             <div className="flex gap-2">
               <button 
                 onClick={() => fetchJobs()}
@@ -695,23 +739,6 @@ export default function Home() {
                 placeholder="Title, company, or location"
                 className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none"
               />
-            </label>
-            <label className="text-sm text-gray-700">
-              <span className="mb-2 block font-medium">Order by</span>
-              <select
-                value={jobSort}
-                onChange={(event) => setJobSort(event.target.value)}
-                className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="fit-score-desc">Highest match</option>
-                <option value="fit-score-asc">Lowest match</option>
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="company-asc">Company A–Z</option>
-                <option value="company-desc">Company Z–A</option>
-                <option value="location-asc">Location A–Z</option>
-                <option value="location-desc">Location Z–A</option>
-              </select>
             </label>
             <label className="text-sm text-gray-700">
               <span className="mb-2 block font-medium">Working type</span>
@@ -767,25 +794,52 @@ export default function Home() {
                 <option value="Not specified">Not specified</option>
               </select>
             </label>
+            <label className="text-sm text-gray-700">
+              <span className="mb-2 block font-medium">Applied</span>
+              <select
+                value={appliedFilter}
+                onChange={(event) => setAppliedFilter(event.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none"
+              >
+                <option>All</option>
+                <option>Applied</option>
+                <option>Not applied</option>
+              </select>
+            </label>
           </div>
           
           <div className="overflow-x-auto bg-white rounded-xl shadow-sm border border-gray-100">
             <table className="w-full text-left text-sm text-gray-600">
               <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
                 <tr>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Job Title</th>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Company</th>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Location</th>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Posted Date</th>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Working Type</th>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Salary</th>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Verification</th>
-                  <th className="px-6 py-4 font-semibold text-gray-900">Match Score</th>
+                  {[
+                    ['Job Title', 'title-asc', 'title-desc'],
+                    ['Company', 'company-asc', 'company-desc'],
+                    ['Location', 'location-asc', 'location-desc'],
+                    ['Posted Date', 'newest', 'oldest'],
+                    ['Working Type', 'working-type-asc', 'working-type-desc'],
+                    ['Salary', 'salary-asc', 'salary-desc'],
+                    ['Verification', 'verification-asc', 'verification-desc'],
+                    ['Match Score', 'fit-score-desc', 'fit-score-asc'],
+                    ['Applied', 'applied-asc', 'applied-desc'],
+                  ].map(([label, ascendingSort, descendingSort]) => (
+                    <th key={label} className="px-6 py-4 font-semibold text-gray-900">
+                      <button
+                        type="button"
+                        onClick={() => toggleHeaderSort(ascendingSort, descendingSort)}
+                        className="inline-flex items-center gap-1 text-left hover:text-blue-700"
+                        title={`Sort by ${label}`}
+                      >
+                        {label}
+                        <ArrowUpDown className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </th>
+                  ))}
                   <th className="px-6 py-4 font-semibold text-gray-900">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filteredJobs.map(({ job, index }) => {
+                {openJobs.map(({ job, index }) => {
                   const scoreStr = job['Fit Score (%)']?.toString().replace('%', '') || '0';
                   const score = parseInt(scoreStr);
                   
@@ -819,6 +873,7 @@ export default function Home() {
                           {job['Fit Score (%)']}
                         </span>
                       </td>
+                      <td className="px-6 py-4 text-gray-700">{job.Applied === 'Yes' ? 'Applied' : 'Not applied'}</td>
                                       <td className="whitespace-nowrap px-6 py-4">
                         <div className="relative inline-block">
                           <select
@@ -886,6 +941,64 @@ export default function Home() {
               </tbody>
             </table>
           </div>
+
+          {appliedJobs.length > 0 && (
+            <section className="mt-8">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-bold">Applied Jobs ({appliedJobs.length})</h2>
+                  <p className="mt-1 text-sm text-gray-500">These jobs are excluded from AI verification.</p>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-emerald-100 bg-white shadow-sm">
+                <table className="w-full text-left text-sm text-gray-600">
+                  <thead className="border-b border-emerald-100 bg-emerald-50">
+                    <tr>
+                      <th className="px-6 py-4 font-semibold text-gray-900">Job Title</th>
+                      <th className="px-6 py-4 font-semibold text-gray-900">Company</th>
+                      <th className="px-6 py-4 font-semibold text-gray-900">Location</th>
+                      <th className="px-6 py-4 font-semibold text-gray-900">Verification</th>
+                      <th className="px-6 py-4 font-semibold text-gray-900">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {appliedJobs.map(({ job, index }) => (
+                      <tr key={index} className="transition hover:bg-emerald-50">
+                        <td className="px-6 py-4 font-medium text-gray-900">{job['Job Title']}</td>
+                        <td className="px-6 py-4 text-gray-700">{job.Company}</td>
+                        <td className="px-6 py-4 text-gray-700">{job.Location}</td>
+                        <td className="px-6 py-4 text-gray-700">{job['Verification Status'] || 'Not verified'}</td>
+                        <td className="whitespace-nowrap px-6 py-4">
+                          <select
+                            aria-label={`Actions for applied job ${job['Job Title']}`}
+                            value=""
+                            onChange={(event) => {
+                              const action = event.target.value;
+                              if (action === 'details') window.open(`/jobs/${index}`, '_blank', 'noopener,noreferrer');
+                              if (action === 'link') {
+                                const preferredUrl = getPreferredJobUrl(job);
+                                if (preferredUrl) window.open(preferredUrl, '_blank', 'noopener,noreferrer');
+                              }
+                              if (action === 'delete') void dismissJob(job);
+                              if (action === 'unapply') void updateApplied(job, false);
+                              event.target.value = '';
+                            }}
+                            className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 shadow-sm outline-none transition focus:border-blue-500"
+                          >
+                            <option value="">Actions</option>
+                            <option value="details">View more details</option>
+                            <option value="link" disabled={!getPreferredJobUrl(job)}>View link</option>
+                            <option value="delete">Delete</option>
+                            <option value="unapply">Mark not applied</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
         </section>
       )}
 
