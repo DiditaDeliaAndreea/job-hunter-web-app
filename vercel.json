@@ -3,6 +3,7 @@
 	"buildCommand": "npm run build",
 	"outputDirectory": ".next",
 	"rewrites": [
-		{ "source": "/cvs", "destination": "/my-cvs" }
+		{ "source": "/my-cvs", "destination": "/cvs" },
+		{ "source": "/mycv", "destination": "/cvs" }
 	]
 }
