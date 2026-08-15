@@ -271,7 +271,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     }
 
     setGeneratingTailoredCv(true);
-    setTailoredCvMessage('Generating an ATS-friendly CV with job-specific keywords...');
+    setTailoredCvMessage('Preparing a CV matched to this job...');
     try {
       const formData = new FormData();
       formData.append('cv_file', recommendedCvFile);
@@ -283,7 +283,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || 'Could not generate the tailored CV.');
       setTailoredCv(data.tailored_cv || '');
-      setTailoredCvMessage('ATS-friendly CV generated. Review every detail before using it.');
+      setTailoredCvMessage('Your tailored CV is ready. Review every detail before using it.');
     } catch (generationError) {
       setTailoredCvMessage(generationError instanceof Error ? generationError.message : 'Could not generate the tailored CV.');
     } finally {
@@ -406,7 +406,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                   <Sparkles className="h-5 w-5 text-indigo-700" />
                   <h2 className="text-xl font-semibold text-gray-900">CV workspace</h2>
                 </div>
-                <p className="text-sm text-gray-700">Compare your recommended CV with an AI-tailored version using keywords from this job.</p>
+                <p className="text-sm text-gray-700">Compare your recommended CV with a version tailored to this job.</p>
               </div>
               <button
                 type="button"
@@ -415,12 +415,12 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                 className="inline-flex items-center gap-2 rounded-md bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Sparkles className="h-4 w-4" />
-                {generatingTailoredCv ? 'Generating...' : 'Generate tailored CV'}
+                {generatingTailoredCv ? 'Preparing...' : 'Tailor this CV'}
               </button>
             </div>
             {tailoredCvMessage && <p className="mb-4 text-sm text-indigo-900">{tailoredCvMessage}</p>}
             <div className="mb-4 rounded-lg border border-indigo-200 bg-white p-4">
-              <label htmlFor="cv-tailoring-prompt" className="mb-2 block text-sm font-semibold text-gray-900">Ask AI how to tailor your CV</label>
+              <label htmlFor="cv-tailoring-prompt" className="mb-2 block text-sm font-semibold text-gray-900">Tell us how to tailor your CV</label>
               <textarea
                 id="cv-tailoring-prompt"
                 value={cvPrompt}
@@ -435,7 +435,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                 disabled={askingCvQuestion || !recommendedCvFile || !cvPrompt.trim()}
                 className="mt-3 rounded-md border border-indigo-300 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {askingCvQuestion ? 'Asking AI...' : 'Ask AI'}
+                {askingCvQuestion ? 'Thinking...' : 'Get advice'}
               </button>
               <p className="mt-2 text-xs text-gray-500">Every prompt is saved automatically and guides future tailoring requests for your account.</p>
               {cvChatAnswer && <div className="mt-3 whitespace-pre-wrap rounded-md bg-indigo-50 p-3 text-sm leading-6 text-indigo-950">{cvChatAnswer}</div>}

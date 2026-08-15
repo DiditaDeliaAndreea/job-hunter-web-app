@@ -201,3 +201,14 @@ def fetch_prompt_preferences(user_id: str, limit: int = 12) -> List[Dict[str, An
     collection = _get_database().collection("users").document(user_id).collection("prompt_preferences")
     records = [document.to_dict() for document in collection.stream()]
     return sorted(records, key=lambda record: str(record.get("created_at", "")), reverse=True)[:limit]
+
+
+def fetch_role_preferences(user_id: str) -> Dict[str, Any]:
+    document = _get_database().collection("users").document(user_id).collection("preferences").document("roles").get()
+    return document.to_dict() or {"target_roles": [], "excluded_roles": []}
+
+
+def save_role_preferences(user_id: str, target_roles: List[str], excluded_roles: List[str]) -> Dict[str, Any]:
+    record = {"target_roles": target_roles, "excluded_roles": excluded_roles, "updated_at": datetime.now(timezone.utc).isoformat()}
+    _get_database().collection("users").document(user_id).collection("preferences").document("roles").set(record)
+    return record

@@ -36,6 +36,13 @@ function readableAuthError(error: unknown): Error {
   return new Error(messages[code] || 'Could not complete authentication.')
 }
 
+function requireFirebaseAuth() {
+  if (!firebaseAuth) {
+    throw new Error('Sign-in is not configured. Add the NEXT_PUBLIC_FIREBASE_* variables to the deployment settings.')
+  }
+  return firebaseAuth
+}
+
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext)
   if (!context) throw new Error('useAuth must be used inside AuthProvider')
@@ -102,18 +109,24 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
     user,
     loading,
     signIn: async (email: string, password: string) => {
-      try { await signInWithEmailAndPassword(firebaseAuth, email, password) } catch (error) { throw readableAuthError(error) }
+      try { await signInWithEmailAndPassword(requireFirebaseAuth(), email, password) } catch (error) { throw readableAuthError(error) }
     },
     register: async (email: string, password: string) => {
-      try { await createUserWithEmailAndPassword(firebaseAuth, email, password) } catch (error) { throw readableAuthError(error) }
+      try { await createUserWithEmailAndPassword(requireFirebaseAuth(), email, password) } catch (error) { throw readableAuthError(error) }
     },
-    logout: () => signOut(firebaseAuth),
+    logout: () => firebaseAuth ? signOut(firebaseAuth) : Promise.resolve(),
   }), [user, loading])
 
-  useEffect(() => onAuthStateChanged(firebaseAuth, (nextUser) => {
-    setUser(nextUser)
-    setLoading(false)
-  }), [])
+  useEffect(() => {
+    if (!firebaseAuth) {
+      setLoading(false)
+      return
+    }
+    return onAuthStateChanged(firebaseAuth, (nextUser) => {
+      setUser(nextUser)
+      setLoading(false)
+    })
+  }, [])
 
   return <AuthContext.Provider value={value}>{loading ? <div className="flex min-h-screen items-center justify-center text-gray-500">Loading...</div> : user ? children : <AuthScreen />}</AuthContext.Provider>
 }

@@ -175,7 +175,7 @@ export default function StatsPage() {
             <ArrowLeft className="h-4 w-4" /> Back to jobs
           </Link>
           <h1 className="text-4xl font-bold tracking-tight">Job search stats</h1>
-          <p className="mt-2 text-gray-500">A clear view of your saved opportunities and application progress.</p>
+          <p className="mt-2 text-gray-500">A clear view of your saved opportunities and applications.</p>
         </div>
         <button
           type="button"
@@ -195,7 +195,7 @@ export default function StatsPage() {
         ) : (
           <>
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <StatCard label="Saved jobs" value={String(jobs.length)} detail={`${stats.verified} with a verification result`} icon={BriefcaseBusiness} accent="bg-blue-100 text-blue-700" />
+              <StatCard label="Saved jobs" value={String(jobs.length)} detail={`${stats.verified} listings checked`} icon={BriefcaseBusiness} accent="bg-blue-100 text-blue-700" />
               <StatCard label="Applications" value={String(stats.applied)} detail={`${stats.applicationRate}% of saved jobs`} icon={CheckCircle2} accent="bg-emerald-100 text-emerald-700" />
               <StatCard label="Active opportunities" value={String(stats.active)} detail={`${stats.expired} marked expired`} icon={Target} accent="bg-amber-100 text-amber-700" />
               <StatCard label="Average match" value={`${stats.averageFit}%`} detail={`${stats.salaryKnown} jobs show salary data`} icon={BarChart3} accent="bg-indigo-100 text-indigo-700" />

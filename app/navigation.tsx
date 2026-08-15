@@ -7,7 +7,7 @@ import { BarChart3, BriefcaseBusiness, FileText, FolderOpen, LogOut, Menu, Setti
 import { useAuth } from './auth-provider'
 
 const links = [
-  { href: '/', label: 'Job search', icon: BriefcaseBusiness },
+  { href: '/', label: 'Find jobs', icon: BriefcaseBusiness },
   { href: '/open-jobs', label: 'Open jobs', icon: FolderOpen },
   { href: '/applied-jobs', label: 'Applied jobs', icon: BriefcaseBusiness },
   { href: '/cvs', label: 'My CVs', icon: FileText },

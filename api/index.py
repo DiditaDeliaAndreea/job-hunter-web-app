@@ -16,7 +16,6 @@ from html import unescape
 from typing import Any, Dict, List
 from pathlib import Path
 
-import pandas as pd
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +23,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from pypdf import PdfReader
 from docx import Document
 from google.api_core.exceptions import NotFound as GoogleNotFound
+from openpyxl import Workbook
 
 # Import CSV utilities
 import sys
@@ -87,9 +87,10 @@ async def validate_environment(_: FastAPI):
 app = FastAPI(lifespan=validate_environment)
 
 # Add CORS middleware to allow requests from frontend
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8000"],
+    allow_origins=[frontend_url, "http://localhost:3000", "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -612,10 +613,16 @@ async def run_search_pipeline(
             update_search_status(search_id, "Skipping CSV write because no valid jobs were returned.", 82)
 
         update_search_status(search_id, "Exporting workbook to Excel...", 90)
-        df = pd.DataFrame(matched_jobs)
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Job Matches', index=False)
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = 'Job Matches'
+        headers = list(dict.fromkeys(field for job in matched_jobs for field in job.keys()))
+        if headers:
+            worksheet.append(headers)
+            for job in matched_jobs:
+                worksheet.append([job.get(header, '') for header in headers])
+        workbook.save(output)
         output.seek(0)
 
         ACTIVE_SEARCHES[search_id]["status"] = "complete"
@@ -1475,6 +1482,19 @@ async def rename_cv(cv_id: str, name: str = Form(...), current_user: Dict[str, A
     return JSONResponse({"cv": record})
 
 
+@app.get("/api/cvs/{cv_id}/content")
+async def get_cv_content(cv_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> StreamingResponse:
+    try:
+        record, content = firebase_utils.download_cv(current_user["uid"], cv_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="CV not found") from exc
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=str(record.get("content_type") or "application/octet-stream"),
+        headers={"Content-Disposition": f"inline; filename=\"{record.get('name', 'cv')}\""},
+    )
+
+
 @app.get("/api/search/status/{search_id}")
 async def get_search_status(search_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
     """Return the current progress and log stream for an active search."""
@@ -1543,6 +1563,22 @@ async def get_jobs(current_user: Dict[str, Any] = Depends(get_current_user)) -> 
             status_code=500,
             detail="Failed to fetch jobs from database"
         )
+
+
+@app.get("/api/preferences/roles")
+async def get_role_preferences(current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    return JSONResponse(firebase_utils.fetch_role_preferences(current_user["uid"]))
+
+
+@app.put("/api/preferences/roles")
+async def put_role_preferences(
+    target_roles: str = Form(""),
+    excluded_roles: str = Form(""),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    split_roles = lambda value: list(dict.fromkeys(role.strip() for role in re.split(r"[,\n]", value) if role.strip()))
+    record = firebase_utils.save_role_preferences(current_user["uid"], split_roles(target_roles), split_roles(excluded_roles))
+    return JSONResponse(record)
 
 
 @app.post("/api/jobs/import-csv")

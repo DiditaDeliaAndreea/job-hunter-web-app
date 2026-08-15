@@ -1,8 +1,5 @@
 {
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 300,
-      "memory": 1024
-    }
-  }
+	"framework": "nextjs",
+	"buildCommand": "npm run build",
+	"outputDirectory": ".next"
 }

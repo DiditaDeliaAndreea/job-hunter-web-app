@@ -102,6 +102,7 @@ export default function Home() {
   useEffect(() => {
     fetchJobs();
     void loadImportedCvs();
+    void loadRolePreferences();
 
     const savedPreferences = window.localStorage.getItem(ROLE_PREFERENCES_STORAGE_KEY);
     if (savedPreferences) {
@@ -114,6 +115,18 @@ export default function Home() {
       }
     }
   }, []);
+
+  const loadRolePreferences = async () => {
+    try {
+      const response = await apiFetch('/api/preferences/roles', { cache: 'no-store' });
+      const preferences = await response.json();
+      if (!response.ok) return;
+      setTargetRoles(Array.isArray(preferences.target_roles) ? preferences.target_roles.join('\n') : '');
+      setExcludedRoles(Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles.join('\n') : '');
+    } catch {
+      // Local preferences remain available as a fallback.
+    }
+  };
 
   const loadImportedCvs = async () => {
     try {
@@ -241,14 +254,22 @@ export default function Home() {
       ROLE_PREFERENCES_STORAGE_KEY,
       JSON.stringify({ targetRoles, excludedRoles })
     );
-    setSearchMessage('Role preferences saved for future searches.');
+    const formData = new FormData();
+    formData.append('target_roles', targetRoles);
+    formData.append('excluded_roles', excludedRoles);
+    void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(() => {
+      setSearchMessage('Role preferences saved for future searches.');
+    }).catch(() => setSearchMessage('Saved on this device. Could not sync preferences yet.'));
   };
 
   const clearSavedRolePreferences = () => {
     window.localStorage.removeItem(ROLE_PREFERENCES_STORAGE_KEY);
     setTargetRoles('');
     setExcludedRoles('');
-    setSearchMessage('Saved role preferences cleared. Default roles will be used.');
+    const formData = new FormData();
+    void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(() => {
+      setSearchMessage('Saved role preferences cleared. Default roles will be used.');
+    }).catch(() => setSearchMessage('Preferences cleared on this device. Could not sync yet.'));
   };
 
   const dismissJob = async (job: any) => {
@@ -602,9 +623,9 @@ export default function Home() {
     <main className="min-h-screen w-full bg-slate-50 px-4 py-6 font-sans text-slate-900 md:px-8 lg:px-10">
       <header className="mx-auto mb-8 flex max-w-7xl flex-wrap items-end justify-between gap-5 border-b border-slate-200 pb-6">
         <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Job workspace</p>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Find your next role</p>
           <h1 className="text-3xl font-bold tracking-tight md:text-4xl">Find your next best match</h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-600">Select a CV, set your role preferences, and run a focused search for fresh opportunities.</p>
+          <p className="mt-2 max-w-2xl text-sm text-slate-600">Choose a CV, set your role preferences, and search for fresh opportunities.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => void importExistingCsv()} disabled={importingCsv} className="rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
@@ -620,7 +641,7 @@ export default function Home() {
         <form onSubmit={handleSubmit}>
           <div className="mb-5 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-5">
             <div>
-              <h2 className="text-lg font-semibold text-slate-900">Start a job search</h2>
+              <h2 className="text-lg font-semibold text-slate-900">Search for jobs</h2>
               <p className="mt-1 text-sm text-slate-500">Your saved CVs are reusable. New uploads are saved automatically.</p>
             </div>
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">{selectedCvIds.length} CV{selectedCvIds.length === 1 ? '' : 's'} selected</span>
@@ -760,7 +781,7 @@ export default function Home() {
             className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-8 py-3 font-medium text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 md:w-auto"
           >
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Briefcase className="w-5 h-5" />}
-            {uploadingCvs ? 'Saving CVs...' : loading ? 'Agents Running (This takes a moment)...' : 'Run Search Pipeline'}
+            {uploadingCvs ? 'Saving CVs...' : loading ? 'Searching...' : 'Run job search'}
           </button>
         </form>
       </div>

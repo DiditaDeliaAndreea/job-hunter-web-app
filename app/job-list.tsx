@@ -74,7 +74,7 @@ export default function JobList({ applied }: { applied: boolean }) {
       <div className="mx-auto max-w-7xl">
         <header className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-200 pb-6">
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Job workspace</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Your jobs</p>
             <h1 className="text-3xl font-bold tracking-tight">{applied ? 'Applied jobs' : 'Open jobs'}</h1>
             <p className="mt-2 text-sm text-slate-600">{applied ? 'Keep track of roles you have already applied to.' : 'Review saved opportunities that still need your attention.'}</p>
           </div>
@@ -85,8 +85,8 @@ export default function JobList({ applied }: { applied: boolean }) {
 
         {!applied && <section className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 h-5 w-5 text-amber-700" /><div><h2 className="font-semibold text-slate-900">Verify open jobs</h2><p className="mt-1 text-sm text-slate-600">Check whether saved listings are still active and update their verification status.</p></div></div>
-            <button type="button" onClick={() => void verifyJobs()} disabled={verifying || jobs.length === 0} className="rounded-md bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50">{verifying ? 'Verifying...' : 'Verify jobs'}</button>
+            <div className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 h-5 w-5 text-amber-700" /><div><h2 className="font-semibold text-slate-900">Check open listings</h2><p className="mt-1 text-sm text-slate-600">Check whether saved listings are still active.</p></div></div>
+            <button type="button" onClick={() => void verifyJobs()} disabled={verifying || jobs.length === 0} className="rounded-md bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50">{verifying ? 'Checking...' : 'Check listings'}</button>
           </div>
           {(verifying || verificationMessage) && <div className="mt-4"><div className="mb-2 flex justify-between text-sm text-slate-700"><span>{verificationMessage}</span><span>{verificationProgress}%</span></div><div className="h-2 overflow-hidden rounded-full bg-amber-200"><div className="h-full bg-amber-700 transition-all" style={{ width: `${verificationProgress}%` }} /></div><div className="mt-3 max-h-28 space-y-1 overflow-auto text-xs text-slate-600">{verificationLogs.map((log, index) => <p key={`${log}-${index}`}>{log}</p>)}</div></div>}
         </section>}

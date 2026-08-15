@@ -12,10 +12,21 @@ const firebaseConfig = {
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
 }
 
-export const firebaseApp = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp()
-export const firebaseAuth = getAuth(firebaseApp)
+const hasFirebaseConfig = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.authDomain &&
+  firebaseConfig.projectId &&
+  firebaseConfig.storageBucket &&
+  firebaseConfig.messagingSenderId &&
+  firebaseConfig.appId,
+)
+
+export const firebaseApp = hasFirebaseConfig
+  ? (getApps().length === 0 ? initializeApp(firebaseConfig) : getApp())
+  : null
+export const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null
 
 export async function initializeFirebaseAnalytics(): Promise<void> {
-  if (typeof window === 'undefined' || !(await isSupported())) return
+  if (!firebaseApp || typeof window === 'undefined' || !(await isSupported())) return
   getAnalytics(firebaseApp)
 }
