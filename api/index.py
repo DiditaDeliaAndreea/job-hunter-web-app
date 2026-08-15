@@ -86,6 +86,16 @@ async def validate_environment(_: FastAPI):
 
 app = FastAPI(lifespan=validate_environment)
 
+
+@app.get("/")
+async def root() -> JSONResponse:
+    return JSONResponse({"service": "CareerMatch API", "status": "ok"})
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
 # Add CORS middleware to allow requests from frontend
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
 app.add_middleware(
