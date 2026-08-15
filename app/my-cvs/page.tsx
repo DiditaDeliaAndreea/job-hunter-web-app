@@ -1,5 +1,5 @@
-import { redirect } from 'next/navigation'
+import CvPage from '../cv-page'
 
 export default function MyCvsPage() {
-  redirect('/cvs')
+  return <CvPage />
 }
