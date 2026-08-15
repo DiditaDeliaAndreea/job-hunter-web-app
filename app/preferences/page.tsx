@@ -21,21 +21,43 @@ export default function PreferencesPage() {
 
   useEffect(() => {
     const loadPreferences = async () => {
+      const loadLocalPreferences = () => {
+        const saved = window.localStorage.getItem(STORAGE_KEY)
+        if (!saved) return null
+        try {
+          const preferences = JSON.parse(saved)
+          return {
+            targetRoles: parseRoles(preferences.targetRoles),
+            excludedRoles: parseRoles(preferences.excludedRoles),
+          }
+        } catch {
+          window.localStorage.removeItem(STORAGE_KEY)
+          return null
+        }
+      }
+
       try {
         const response = await apiFetch('/api/preferences/roles', { cache: 'no-store' })
         const preferences = await response.json()
         if (!response.ok) throw new Error(preferences?.detail || 'Could not load preferences.')
-        setTargetRoles(Array.isArray(preferences.target_roles) ? preferences.target_roles : parseRoles(preferences.targetRoles))
-        setExcludedRoles(Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles : parseRoles(preferences.excludedRoles))
+        const remoteTargetRoles = Array.isArray(preferences.target_roles) ? preferences.target_roles : parseRoles(preferences.targetRoles)
+        const remoteExcludedRoles = Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles : parseRoles(preferences.excludedRoles)
+        const localPreferences = loadLocalPreferences()
+        const target = remoteTargetRoles.length ? remoteTargetRoles : localPreferences?.targetRoles || []
+        const excluded = remoteExcludedRoles.length ? remoteExcludedRoles : localPreferences?.excludedRoles || []
+        setTargetRoles(target)
+        setExcludedRoles(excluded)
+        if ((!remoteTargetRoles.length && !remoteExcludedRoles.length) && (target.length || excluded.length)) {
+          const formData = new FormData()
+          formData.append('target_roles', target.join('\n'))
+          formData.append('excluded_roles', excluded.join('\n'))
+          await apiFetch('/api/preferences/roles', { method: 'PUT', body: formData })
+        }
       } catch {
-        const saved = window.localStorage.getItem(STORAGE_KEY)
-        if (!saved) return
-        try {
-          const preferences = JSON.parse(saved)
-          setTargetRoles(parseRoles(preferences.targetRoles))
-          setExcludedRoles(parseRoles(preferences.excludedRoles))
-        } catch {
-          window.localStorage.removeItem(STORAGE_KEY)
+        const localPreferences = loadLocalPreferences()
+        if (localPreferences) {
+          setTargetRoles(localPreferences.targetRoles)
+          setExcludedRoles(localPreferences.excludedRoles)
         }
       }
     }

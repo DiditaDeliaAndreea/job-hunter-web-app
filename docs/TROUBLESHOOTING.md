@@ -154,7 +154,46 @@ What fixed it:
 - Removed the automatic browser download.
 - The UI now keeps the ready result and only downloads when the user clicks the button.
 
-## 8. Job Filtering Requirements
+## 8. Vercel CV Route 404s
+
+### Symptoms
+
+- The local build generated the CV routes successfully, but Vercel showed a 404 for `/cvs` or `/my-cvs`.
+- The direct deployment URL worked while an assigned Vercel alias served an older route set.
+- Vercel sometimes built an older source version containing duplicate route files or old rewrites.
+- Vercel project settings also initially reported the framework as `Other` instead of `Next.js`.
+
+### Diagnosis
+
+Confirm the local App Router files and generated output:
+
+```powershell
+Test-Path app\my-cvs\page.tsx
+npm run build
+Test-Path .next\server\app\my-cvs\page.js
+```
+
+Then test both the direct deployment URL and the assigned domain separately. If the direct deployment returns `200` but the assigned domain returns `404`, the issue is alias/deployment routing or stale edge data, not the route folder.
+
+### What fixed it
+
+- Kept one canonical CV route: `/my-cvs`.
+- Moved the page implementation into `app/cv-page.tsx`.
+- Made `app/my-cvs/page.tsx` the only CV page entry point.
+- Removed duplicate `app/cvs/page.tsx` and `app/mycv/page.tsx` route implementations.
+- Removed Vercel rewrites that mapped `/my-cvs` to `/cvs`.
+- Set Vercel's framework to Next.js with `npm run build` and `.next` output.
+- Deployed the current source directly and verified the direct deployment URL before assigning domains.
+
+Use the canonical route:
+
+```text
+https://job-hunter-app-delia-didita-portfolio.vercel.app/my-cvs
+```
+
+Avoid stale aliases when they return 404. A deployment can be healthy while an older alias still serves a previous route set.
+
+## 9. Job Filtering Requirements
 
 ### Intended behavior
 The app was designed to search for jobs that are:
@@ -166,7 +205,7 @@ The app was designed to search for jobs that are:
 ### Important caveat
 The code instructed the model to filter by recency and relevance, but the strict minimum threshold of 70% fit score was not enforced at the Python layer unless explicitly added later.
 
-## 9. Final Lessons Learned
+## 10. Final Lessons Learned
 
 - Always confirm the real model name before trusting AI output.
 - Keep partial result preservation in the search pipeline.
@@ -176,7 +215,7 @@ The code instructed the model to filter by recency and relevance, but the strict
 - Protect exports and CSV persistence from empty or invalid job payloads.
 - Respect a user’s preference for manual download instead of automatic file saving.
 
-## 10. Useful Commands
+## 11. Useful Commands
 
 ### Backend
 ```powershell
@@ -197,7 +236,7 @@ cd C:\Users\delia\Documents\GitHub\job_hunter_app\job_hunter_app
 npm run build
 ```
 
-## 11. Key Files
+## 12. Key Files
 
 - `api/index.py` — backend orchestration, AI calls, progress state, CSV/Excel logic
 - `app/page.tsx` — frontend progress UI and polling logic
@@ -205,7 +244,7 @@ npm run build
 - `data/job_matches.csv` — persisted job results
 - `.env` — project environment configuration including API key
 
-## 12. Current State
+## 13. Current State
 
 The app currently works as a local prototype for:
 - CV upload

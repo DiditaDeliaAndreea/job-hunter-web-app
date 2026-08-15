@@ -16,8 +16,6 @@ const links = [
   { href: '/account', label: 'Account', icon: UserRound },
 ]
 
-const canonicalOrigin = process.env.NEXT_PUBLIC_APP_URL || 'https://job-hunter-app-delia-didita-portfolio.vercel.app'
-
 export default function Navigation() {
   const pathname = usePathname()
   const { user, logout } = useAuth()
@@ -40,7 +38,7 @@ export default function Navigation() {
             return (
               <Link
                 key={href}
-                href={`${canonicalOrigin}${href}`}
+                href={href}
                 className={`flex shrink-0 items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition md:w-full ${active ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'}`}
               >
                 <Icon className="h-4 w-4" />
