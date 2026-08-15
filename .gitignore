@@ -10,3 +10,7 @@ node_modules
 .vscode
 __pycache__/
 *.pyc
+*.tsbuildinfo
+.env*
+serviceAccountKey.json
+firebase-service-account.json

@@ -3,9 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BarChart3, BriefcaseBusiness, CheckCircle2, Clock3, RefreshCw, Target } from 'lucide-react';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-const getApiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+import { apiFetch } from '../../lib/api';
 
 type Job = Record<string, string | undefined>;
 
@@ -110,7 +108,7 @@ export default function StatsPage() {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(getApiUrl('/api/jobs'), { cache: 'no-store' });
+      const response = await apiFetch('/api/jobs', { cache: 'no-store' });
       if (!response.ok) throw new Error(`Jobs API request failed: ${response.status}`);
       const data = await response.json();
       setJobs(Array.isArray(data.jobs) ? data.jobs : []);

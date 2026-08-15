@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
+from utils import firebase_utils
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -45,7 +47,7 @@ def normalize_csv_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def export_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.csv") -> str:
+def export_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.csv", user_id: str | None = None) -> str:
     """
     Export job data to CSV file.
     
@@ -56,6 +58,10 @@ def export_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.
     Returns:
         Path to created CSV file
     """
+    if firebase_utils.is_configured() and user_id:
+        firebase_utils.replace_jobs(jobs, user_id or "")
+        return "firebase://jobs"
+
     filepath = DATA_DIR / filename
     
     if not jobs:
@@ -78,7 +84,7 @@ def export_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.
         raise
 
 
-def import_jobs_from_csv(filename: str = "job_matches.csv") -> List[Dict[str, Any]]:
+def import_jobs_from_csv(filename: str = "job_matches.csv", user_id: str | None = None) -> List[Dict[str, Any]]:
     """
     Import job data from CSV file.
     
@@ -88,6 +94,9 @@ def import_jobs_from_csv(filename: str = "job_matches.csv") -> List[Dict[str, An
     Returns:
         List of job dictionaries
     """
+    if firebase_utils.is_configured() and user_id:
+        return firebase_utils.fetch_jobs(user_id or "")
+
     filepath = DATA_DIR / filename
     
     if not filepath.exists():
@@ -109,7 +118,16 @@ def import_jobs_from_csv(filename: str = "job_matches.csv") -> List[Dict[str, An
         return []
 
 
-def append_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.csv") -> str:
+def import_local_jobs_from_csv(filename: str = "job_matches.csv") -> List[Dict[str, Any]]:
+    """Read the local CSV directly, even when Firebase persistence is enabled."""
+    filepath = DATA_DIR / filename
+    if not filepath.exists():
+        return []
+    with open(filepath, 'r', encoding='utf-8') as csvfile:
+        return [normalize_csv_job(dict(row)) for row in csv.DictReader(csvfile)]
+
+
+def append_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.csv", user_id: str | None = None) -> str:
     """
     Append jobs to existing CSV file (avoiding duplicates).
     
@@ -120,6 +138,10 @@ def append_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.
     Returns:
         Path to CSV file
     """
+    if firebase_utils.is_configured() and user_id:
+        firebase_utils.append_jobs(jobs, user_id or "")
+        return "firebase://jobs"
+
     filepath = DATA_DIR / filename
     
     if not jobs:
@@ -159,9 +181,9 @@ def append_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.
         raise
 
 
-def dismiss_job_in_csv(job_title: str, company: str, filename: str = "job_matches.csv") -> bool:
+def dismiss_job_in_csv(job_title: str, company: str, filename: str = "job_matches.csv", user_id: str | None = None) -> bool:
     """Mark a job as dismissed without deleting it, preventing future re-addition."""
-    jobs = import_jobs_from_csv(filename)
+    jobs = import_jobs_from_csv(filename, user_id)
     target_key = (job_title.strip().lower(), company.strip().lower())
     updated = False
 
@@ -172,13 +194,13 @@ def dismiss_job_in_csv(job_title: str, company: str, filename: str = "job_matche
             updated = True
 
     if updated:
-        export_jobs_to_csv(jobs, filename)
+        export_jobs_to_csv(jobs, filename, user_id)
     return updated
 
 
-def update_job_url_in_csv(job_title: str, company: str, url: str, filename: str = "job_matches.csv") -> bool:
+def update_job_url_in_csv(job_title: str, company: str, url: str, filename: str = "job_matches.csv", user_id: str | None = None) -> bool:
     """Set a user-confirmed preferred URL without replacing the original source URL."""
-    jobs = import_jobs_from_csv(filename)
+    jobs = import_jobs_from_csv(filename, user_id)
     target_key = (job_title.strip().lower(), company.strip().lower())
     updated = False
 
@@ -193,13 +215,13 @@ def update_job_url_in_csv(job_title: str, company: str, url: str, filename: str 
             updated = True
 
     if updated:
-        export_jobs_to_csv(jobs, filename)
+        export_jobs_to_csv(jobs, filename, user_id)
     return updated
 
 
-def update_job_applied_in_csv(job_title: str, company: str, applied: bool, filename: str = "job_matches.csv") -> bool:
+def update_job_applied_in_csv(job_title: str, company: str, applied: bool, filename: str = "job_matches.csv", user_id: str | None = None) -> bool:
     """Persist whether the user applied to a job."""
-    jobs = import_jobs_from_csv(filename)
+    jobs = import_jobs_from_csv(filename, user_id)
     target_key = (job_title.strip().lower(), company.strip().lower())
     updated = False
 
@@ -210,13 +232,13 @@ def update_job_applied_in_csv(job_title: str, company: str, applied: bool, filen
             updated = True
 
     if updated:
-        export_jobs_to_csv(jobs, filename)
+        export_jobs_to_csv(jobs, filename, user_id)
     return updated
 
 
-def update_job_status_in_csv(job_title: str, company: str, status: str, filename: str = "job_matches.csv") -> bool:
+def update_job_status_in_csv(job_title: str, company: str, status: str, filename: str = "job_matches.csv", user_id: str | None = None) -> bool:
     """Persist a user-adjusted verification status and protect it from AI verification."""
-    jobs = import_jobs_from_csv(filename)
+    jobs = import_jobs_from_csv(filename, user_id)
     target_key = (job_title.strip().lower(), company.strip().lower())
     updated = False
 
@@ -230,7 +252,7 @@ def update_job_status_in_csv(job_title: str, company: str, status: str, filename
             updated = True
 
     if updated:
-        export_jobs_to_csv(jobs, filename)
+        export_jobs_to_csv(jobs, filename, user_id)
     return updated
 
 

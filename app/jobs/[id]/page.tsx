@@ -2,12 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, ExternalLink, Briefcase, FileText, Sparkles, Pencil, Check, X } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { ArrowLeft, ExternalLink, Briefcase, FileText, Sparkles, Pencil, Check, X, Trash2 } from 'lucide-react';
 import { getUploadedCv } from '../../../utils/browserStorage';
 import mammoth from 'mammoth';
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-const getApiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+import { apiFetch } from '../../../lib/api';
 
 interface JobRecord {
   [key: string]: string | undefined;
@@ -80,6 +79,7 @@ function renderHighlightedTailoredCv(tailoredCv: string, originalCv: string, job
 }
 
 export default function JobDetailsPage({ params }: { params: Promise<{ id: string }> }) {
+  const router = useRouter();
   const [job, setJob] = useState<JobRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -95,6 +95,8 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
   const [editingUrl, setEditingUrl] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [urlMessage, setUrlMessage] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionMessage, setActionMessage] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -103,7 +105,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       try {
         const resolvedParams = await params;
         const jobIndex = Number(resolvedParams.id);
-        const response = await fetch(getApiUrl('/api/jobs'));
+        const response = await apiFetch('/api/jobs');
         if (!response.ok) {
           throw new Error(`Jobs API request failed: ${response.status}`);
         }
@@ -202,6 +204,66 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     setEditingUrl(true);
   };
 
+  const updateAppliedStatus = async () => {
+    if (!job) return;
+    setActionLoading(true);
+    setActionMessage('');
+    const formData = new FormData();
+    formData.append('job_title', job['Job Title'] || '');
+    formData.append('company', job.Company || '');
+    formData.append('applied', String(job.Applied !== 'Yes'));
+    try {
+      const response = await apiFetch('/api/jobs/applied', { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not update application status.');
+      setJob((current) => current ? { ...current, Applied: data.applied ? 'Yes' : 'No' } : current);
+      setActionMessage(data.applied ? 'Marked as applied.' : 'Marked as not applied.');
+    } catch (actionError) {
+      setActionMessage(actionError instanceof Error ? actionError.message : 'Could not update application status.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const updateVerificationStatus = async () => {
+    if (!job) return;
+    setActionLoading(true);
+    setActionMessage('');
+    const nextStatus = job['Verification Status'] === 'Active' ? 'Expired' : 'Active';
+    const formData = new FormData();
+    formData.append('job_title', job['Job Title'] || '');
+    formData.append('company', job.Company || '');
+    formData.append('status', nextStatus);
+    try {
+      const response = await apiFetch('/api/jobs/status', { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not update job status.');
+      setJob((current) => current ? { ...current, 'Verification Status': data.status } : current);
+      setActionMessage(`Marked as ${nextStatus.toLowerCase()}.`);
+    } catch (actionError) {
+      setActionMessage(actionError instanceof Error ? actionError.message : 'Could not update job status.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const deleteJob = async () => {
+    if (!job || !window.confirm(`Delete ${job['Job Title']} at ${job.Company}?`)) return;
+    setActionLoading(true);
+    const formData = new FormData();
+    formData.append('job_title', job['Job Title'] || '');
+    formData.append('company', job.Company || '');
+    try {
+      const response = await apiFetch('/api/jobs/dismiss', { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not delete this job.');
+      router.push('/open-jobs');
+    } catch (actionError) {
+      setActionMessage(actionError instanceof Error ? actionError.message : 'Could not delete this job.');
+      setActionLoading(false);
+    }
+  };
+
   const generateTailoredCv = async () => {
     if (!job || !recommendedCvFile) {
       setTailoredCvMessage('The recommended CV is not available in browser storage.');
@@ -217,7 +279,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       formData.append('company', job.Company || '');
       formData.append('job_description', job['Job Description'] || '');
       formData.append('user_prompt', cvPrompt);
-      const response = await fetch(getApiUrl('/api/jobs/tailor-cv'), { method: 'POST', body: formData });
+      const response = await apiFetch('/api/jobs/tailor-cv', { method: 'POST', body: formData });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || 'Could not generate the tailored CV.');
       setTailoredCv(data.tailored_cv || '');
@@ -241,7 +303,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     formData.append('url', urlInput.trim());
 
     try {
-      const response = await fetch(getApiUrl('/api/jobs/update-url'), {
+      const response = await apiFetch('/api/jobs/update-url', {
         method: 'POST',
         body: formData,
       });
@@ -274,7 +336,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       formData.append('company', job.Company || '');
       formData.append('job_description', job['Job Description'] || '');
       formData.append('user_prompt', cvPrompt);
-      const response = await fetch(getApiUrl('/api/jobs/tailor-cv/chat'), { method: 'POST', body: formData });
+      const response = await apiFetch('/api/jobs/tailor-cv/chat', { method: 'POST', body: formData });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || 'Could not answer the tailoring question.');
       setCvChatAnswer(data.answer || 'No answer was returned.');
@@ -304,6 +366,18 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
           <span className="rounded-full bg-blue-50 px-3 py-1">{job['Working Type'] || 'Not specified'}</span>
           <span className="rounded-full bg-blue-50 px-3 py-1">Salary: {job.Salary || 'Not specified'}</span>
           <span className="rounded-full bg-green-50 px-3 py-1">Match: {job['Fit Score (%)'] || 'Not specified'}</span>
+        </div>
+        <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-4">
+          <button type="button" onClick={() => void updateAppliedStatus()} disabled={actionLoading} className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
+            <Check className="h-4 w-4" /> {job.Applied === 'Yes' ? 'Mark not applied' : 'Mark as applied'}
+          </button>
+          <button type="button" onClick={() => void updateVerificationStatus()} disabled={actionLoading} className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50">
+            {job['Verification Status'] === 'Active' ? 'Mark expired' : 'Mark active'}
+          </button>
+          <button type="button" onClick={() => void deleteJob()} disabled={actionLoading} className="inline-flex items-center gap-2 rounded-md border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50">
+            <Trash2 className="h-4 w-4" /> Delete
+          </button>
+          {actionMessage && <span className="text-sm text-gray-600">{actionMessage}</span>}
         </div>
       </header>
 
@@ -363,7 +437,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
               >
                 {askingCvQuestion ? 'Asking AI...' : 'Ask AI'}
               </button>
-              <p className="mt-2 text-xs text-gray-500">Your prompt is used as instructions for this tailoring request and is not used to train the model.</p>
+              <p className="mt-2 text-xs text-gray-500">Every prompt is saved automatically and guides future tailoring requests for your account.</p>
               {cvChatAnswer && <div className="mt-3 whitespace-pre-wrap rounded-md bg-indigo-50 p-3 text-sm leading-6 text-indigo-950">{cvChatAnswer}</div>}
             </div>
             <div className="grid gap-4 lg:grid-cols-2">

@@ -9,7 +9,8 @@ CareerMatch is a CV-powered job search dashboard. Upload one or more CVs, config
 - Configure and save target or excluded roles locally in the browser.
 - Search jobs with Gemini Google Search and optional OpenAI fallback.
 - Prefer official employer listings and preserve original job-board URLs.
-- Save results incrementally to `data/job_matches.csv` after each batch.
+- Save results incrementally after each search batch.
+- Persist jobs in Firebase Firestore when Firebase environment variables are configured; otherwise use the local CSV.
 - View job descriptions, match reasons, recommended CVs, tailoring guidance, salary, and URL status.
 - Edit preferred job URLs from the details page.
 - Mark jobs as applied.
@@ -23,8 +24,10 @@ CareerMatch is a CV-powered job search dashboard. Upload one or more CVs, config
 - `app/`: Next.js frontend.
 - `api/index.py`: FastAPI backend, CV parsing, AI orchestration, search polling, verification, and exports.
 - `utils/`: CSV import, normalization, deduplication, and user-status persistence.
-- `data/job_matches.csv`: local persisted job data; intentionally excluded from GitHub.
+- `data/job_matches.csv`: local fallback job data; intentionally excluded from GitHub.
 - `tests/`: regression tests.
+- `scripts/`: one-off migration and maintenance scripts.
+- `docs/`: troubleshooting and operational notes.
 
 ## Requirements
 
@@ -59,9 +62,28 @@ Create `.env` in the project root. Never commit it.
 GOOGLE_API_KEY=your-google-api-key
 OPENAI_API_KEY=your-openai-api-key
 OPENAI_MODEL=gpt-4.1-mini
+FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"your-project-id"}
+FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+NEXT_PUBLIC_FIREBASE_API_KEY=your-web-api-key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-messaging-sender-id
+NEXT_PUBLIC_FIREBASE_APP_ID=your-web-app-id
+NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=your-measurement-id
 ```
 
 `OPENAI_API_KEY` is optional. The app uses Gemini first and tries OpenAI after the first Gemini failure when the key is configured.
+
+To enable hosted job persistence, create a Firebase project, enable Firestore, download a service-account key, and set `FIREBASE_SERVICE_ACCOUNT_JSON` to the key's JSON contents. The backend uses the Admin SDK only; keep this value server-side and never expose it to the browser. Without it, the app continues using the local CSV.
+
+The `NEXT_PUBLIC_FIREBASE_*` values initialize the browser SDK and Analytics. They are not a replacement for the server-only service-account JSON.
+
+In the Firebase console, enable **Authentication > Sign-in method > Email/Password**. Registration and sign-in are handled by the browser SDK. For Firebase-backed data, download a service-account JSON key and add its complete one-line JSON value to the backend `.env` as `FIREBASE_SERVICE_ACCOUNT_JSON`, plus the project's Storage bucket as `FIREBASE_STORAGE_BUCKET`. The API verifies each user's ID token, stores jobs under `users/{uid}/jobs`, stores CV metadata under `users/{uid}/cvs`, and stores the PDF/DOCX bytes in Firebase Storage.
+
+Alternatively, keep the downloaded key as a local file and set `GOOGLE_APPLICATION_CREDENTIALS` to its path. The Node.js `firebase-admin` example using `require("serviceAccountKey.json")` is equivalent, but this project uses the Python Firebase Admin SDK.
+
+CV workspace prompts are saved under `users/{uid}/prompt_preferences` and included as recent style preferences in later tailoring requests. This is retrieval-based personalization, not live model fine-tuning; the underlying AI model is unchanged.
 
 ### 4. Start the backend
 
@@ -90,7 +112,7 @@ The backend remains a separate FastAPI service and must also be deployed/configu
 
 ## Data and Privacy
 
-- Job records are stored locally in `data/job_matches.csv`.
+- Job records are stored in Firebase Firestore when configured, or locally in `data/job_matches.csv` as a fallback.
 - Uploaded CVs used for browser previews are stored in browser IndexedDB.
 - API keys are loaded from `.env` and must never be committed or pasted into public files.
 - Rotate any API key that has been exposed.
@@ -101,7 +123,7 @@ The backend remains a separate FastAPI service and must also be deployed/configu
 - `POST /api/search/start`: start a multi-CV search.
 - `GET /api/search/status/{search_id}`: poll search progress and logs.
 - `GET /api/search/result/{search_id}`: retrieve the generated workbook.
-- `GET /api/jobs`: load active CSV-backed jobs.
+- `GET /api/jobs`: load active persisted jobs.
 - `POST /api/jobs/verify/start`: verify saved jobs against current listings.
 - `POST /api/jobs/dismiss`: persist a dismissed job.
 - `POST /api/jobs/applied`: persist application status.
@@ -109,7 +131,7 @@ The backend remains a separate FastAPI service and must also be deployed/configu
 
 ## Troubleshooting
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for known startup, model, rate-limit, CSV, URL, and partial-result issues.
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for known startup, model, rate-limit, CSV, URL, and partial-result issues.
 
 ## Security Before Publishing
 

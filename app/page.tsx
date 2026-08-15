@@ -3,12 +3,19 @@
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
-import { Upload, FileDown, Loader2, Briefcase, MapPin, X, RefreshCw, Filter, Trash2, ArrowUpDown, BarChart3 } from 'lucide-react';
+import { Upload, FileDown, Loader2, Briefcase, MapPin, X, RefreshCw, Filter, ArrowUpDown, BarChart3 } from 'lucide-react';
 import { saveUploadedCvs } from '../utils/browserStorage';
+import { apiFetch } from '../lib/api';
 
 const ROLE_PREFERENCES_STORAGE_KEY = 'careermatch-role-preferences';
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-const getApiUrl = (path: string) => `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+
+type ImportedCv = {
+  id: string;
+  name: string;
+  content_type?: string;
+  size?: number;
+  created_at?: string;
+};
 
 function formatPostedDate(value: unknown): string {
   const rawValue = String(value || '').trim();
@@ -61,6 +68,10 @@ function getPreferredJobUrl(job: Record<string, any>): string | null {
 
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
+  const [importedCvs, setImportedCvs] = useState<ImportedCv[]>([]);
+  const [selectedCvIds, setSelectedCvIds] = useState<string[]>([]);
+  const [uploadingCvs, setUploadingCvs] = useState(false);
+  const [importingCsv, setImportingCsv] = useState(false);
   const [targetRoles, setTargetRoles] = useState('');
   const [excludedRoles, setExcludedRoles] = useState('');
   const [reuseCvAnalysis, setReuseCvAnalysis] = useState(true);
@@ -79,6 +90,7 @@ export default function Home() {
   const [verificationLogs, setVerificationLogs] = useState<string[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [searchMessage, setSearchMessage] = useState('');
+  const [searchCompleted, setSearchCompleted] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState('');
   const [liveLogs, setLiveLogs] = useState<string[]>([]);
@@ -89,6 +101,7 @@ export default function Home() {
   // Load jobs on mount
   useEffect(() => {
     fetchJobs();
+    void loadImportedCvs();
 
     const savedPreferences = window.localStorage.getItem(ROLE_PREFERENCES_STORAGE_KEY);
     if (savedPreferences) {
@@ -102,10 +115,23 @@ export default function Home() {
     }
   }, []);
 
+  const loadImportedCvs = async () => {
+    try {
+      const response = await apiFetch('/api/cvs', { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || `Could not load imported CVs (${response.status}).`);
+      const records = Array.isArray(data.cvs) ? data.cvs as ImportedCv[] : [];
+      setImportedCvs(records);
+      setSelectedCvIds(records.map((record) => record.id));
+    } catch (error) {
+      console.error('Error fetching imported CVs:', error);
+    }
+  };
+
   // Fetch jobs from CSV
   const fetchJobs = async (updateMessage = true) => {
     try {
-      const response = await fetch(getApiUrl('/api/jobs'), { cache: 'no-store' });
+      const response = await apiFetch('/api/jobs', { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`Jobs API request failed: ${response.status}`);
       }
@@ -127,6 +153,21 @@ export default function Home() {
     }
   };
 
+  const importExistingCsv = async () => {
+    setImportingCsv(true);
+    try {
+      const response = await apiFetch('/api/jobs/import-csv', { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not import the existing CSV.');
+      setSearchMessage(data.message || 'Existing CSV jobs imported.');
+      await fetchJobs(false);
+    } catch (error) {
+      setSearchMessage(error instanceof Error ? error.message : 'Could not import the existing CSV.');
+    } finally {
+      setImportingCsv(false);
+    }
+  };
+
   // Core file validation and state update
   const addFiles = (selectedFiles: File[]) => {
     const validFiles = selectedFiles.filter((selectedFile) =>
@@ -140,6 +181,27 @@ export default function Home() {
       return [...currentFiles, ...validFiles.filter((selectedFile) => !existingNames.has(selectedFile.name))];
     });
     void saveUploadedCvs(validFiles);
+    if (validFiles.length > 0) void uploadImportedCvs(validFiles);
+  };
+
+  const uploadImportedCvs = async (selectedFiles: File[]) => {
+    setUploadingCvs(true);
+    const formData = new FormData();
+    selectedFiles.forEach((selectedFile) => formData.append('files', selectedFile));
+    try {
+      const response = await apiFetch('/api/cvs', { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not save imported CVs.');
+      const savedCvs = Array.isArray(data.cvs) ? data.cvs as ImportedCv[] : [];
+      setImportedCvs((current) => [...savedCvs, ...current]);
+      setSelectedCvIds((current) => [...new Set([...current, ...savedCvs.map((record) => record.id)])]);
+      setFiles([]);
+      setSearchMessage(`${savedCvs.length} CV${savedCvs.length === 1 ? '' : 's'} imported and saved.`);
+    } catch (error) {
+      setSearchMessage(error instanceof Error ? error.message : 'Could not save imported CVs.');
+    } finally {
+      setUploadingCvs(false);
+    }
   };
 
   // 1. Handle Click Selection
@@ -195,7 +257,7 @@ export default function Home() {
     formData.append('company', job.Company || '');
 
     try {
-      const response = await fetch(getApiUrl('/api/jobs/dismiss'), {
+      const response = await apiFetch('/api/jobs/dismiss', {
         method: 'POST',
         body: formData,
       });
@@ -216,7 +278,7 @@ export default function Home() {
     formData.append('applied', String(applied));
 
     try {
-      const response = await fetch(getApiUrl('/api/jobs/applied'), {
+      const response = await apiFetch('/api/jobs/applied', {
         method: 'POST',
         body: formData,
       });
@@ -239,14 +301,14 @@ export default function Home() {
     setVerificationLogs(['Starting saved job verification...']);
 
     try {
-      const response = await fetch(getApiUrl('/api/jobs/verify/start'), { method: 'POST' });
+      const response = await apiFetch('/api/jobs/verify/start', { method: 'POST' });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || 'Could not start verification.');
 
       const verificationId = data.verification_id;
       const poller = window.setInterval(async () => {
         try {
-          const statusResponse = await fetch(getApiUrl(`/api/search/status/${verificationId}`), { cache: 'no-store' });
+          const statusResponse = await apiFetch(`/api/search/status/${verificationId}`, { cache: 'no-store' });
           if (!statusResponse.ok) throw new Error(`Verification status failed (${statusResponse.status})`);
           const status = await statusResponse.json();
           if (status.logs) setVerificationLogs(status.logs);
@@ -272,9 +334,10 @@ export default function Home() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (files.length === 0) return;
+    if (files.length === 0 && selectedCvIds.length === 0) return;
 
     setLoading(true);
+    setSearchCompleted(false);
     setSearchMessage('Starting live search...');
     setProgress(5);
     setProgressLabel('Starting job search...');
@@ -283,12 +346,13 @@ export default function Home() {
 
     const formData = new FormData();
     files.forEach((selectedFile) => formData.append('files', selectedFile));
+    formData.append('cv_ids', selectedCvIds.join(','));
     formData.append('target_roles', targetRoles);
     formData.append('excluded_roles', excludedRoles);
     formData.append('reuse_cv_analysis', String(reuseCvAnalysis));
 
     try {
-      const startResponse = await fetch(getApiUrl('/api/search/start'), {
+      const startResponse = await apiFetch('/api/search/start', {
         method: 'POST',
         body: formData,
       });
@@ -317,7 +381,7 @@ export default function Home() {
 
       const pollStatus = async () => {
         try {
-          const statusResponse = await fetch(getApiUrl(`/api/search/status/${activeSearchId}`));
+          const statusResponse = await apiFetch(`/api/search/status/${activeSearchId}`);
           if (statusResponse.status === 404) {
             setLoading(false);
             setProgress(0);
@@ -342,9 +406,10 @@ export default function Home() {
           if (statusData?.status === 'complete') {
             setProgress(100);
             setProgressLabel('Search complete');
-            setSearchMessage('Search completed! Excel file ready.');
+            setSearchMessage('Search completed. Your new matches are ready in Open jobs.');
+            setSearchCompleted(true);
             setLoading(false);
-            setDownloadUrl(statusData.download_url ? `${API_BASE_URL}${statusData.download_url}` : null);
+            setDownloadUrl(statusData.download_url ? statusData.download_url : null);
             setTimeout(() => fetchJobs(), 500);
             return true;
           }
@@ -515,23 +580,55 @@ export default function Home() {
     }, {});
   const openJobs = filteredJobs.filter(({ job }) => job.Applied !== 'Yes');
   const appliedJobs = filteredJobs.filter(({ job }) => job.Applied === 'Yes');
+  const activeFilterCount = [
+    jobFilter.trim(),
+    workingTypeFilter !== 'All' ? workingTypeFilter : '',
+    minimumScore !== '0' ? minimumScore : '',
+    salaryFilter !== 'All' ? salaryFilter : '',
+    postedDateFilter !== 'All' ? postedDateFilter : '',
+    appliedFilter !== 'All' ? appliedFilter : '',
+  ].filter(Boolean).length;
+
+  const clearJobFilters = () => {
+    setJobFilter('');
+    setWorkingTypeFilter('All');
+    setMinimumScore('0');
+    setSalaryFilter('All');
+    setPostedDateFilter('All');
+    setAppliedFilter('All');
+  };
 
   return (
-    <main className="min-h-screen w-full px-4 py-6 font-sans md:px-8 lg:px-10">
-      <header className="mb-10 text-center">
-        <h1 className="text-4xl font-bold mb-2 tracking-tight">CareerMatch</h1>
-        <p className="text-gray-500">Upload your CV to discover roles that match your experience.</p>
-        <Link href="/stats" className="mt-4 inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100">
-          <BarChart3 className="h-4 w-4" /> View stats
-        </Link>
+    <main className="min-h-screen w-full bg-slate-50 px-4 py-6 font-sans text-slate-900 md:px-8 lg:px-10">
+      <header className="mx-auto mb-8 flex max-w-7xl flex-wrap items-end justify-between gap-5 border-b border-slate-200 pb-6">
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Job workspace</p>
+          <h1 className="text-3xl font-bold tracking-tight md:text-4xl">Find your next best match</h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-600">Select a CV, set your role preferences, and run a focused search for fresh opportunities.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => void importExistingCsv()} disabled={importingCsv} className="rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
+            {importingCsv ? 'Importing...' : 'Import previous jobs'}
+          </button>
+          <Link href="/stats" className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700">
+            <BarChart3 className="h-4 w-4" /> View stats
+          </Link>
+        </div>
       </header>
 
-      <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 mb-10">
-        <form onSubmit={handleSubmit} className="flex flex-col items-center">
+      <div className="mx-auto mb-8 max-w-7xl rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-7">
+        <form onSubmit={handleSubmit}>
+          <div className="mb-5 flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-5">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Start a job search</h2>
+              <p className="mt-1 text-sm text-slate-500">Your saved CVs are reusable. New uploads are saved automatically.</p>
+            </div>
+            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">{selectedCvIds.length} CV{selectedCvIds.length === 1 ? '' : 's'} selected</span>
+          </div>
           
           {/* Dropzone Area */}
           <div 
-            className={`flex flex-col items-center justify-center w-full h-48 border-2 border-dashed rounded-xl transition relative
+            className={`flex min-h-40 flex-col items-center justify-center w-full border-2 border-dashed rounded-xl transition relative
               ${dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100'}`}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -572,7 +669,40 @@ export default function Home() {
             )}
           </div>
 
-          <div className="grid w-full gap-4 mt-6 md:grid-cols-2">
+          <section className="mt-6 w-full rounded-lg border border-blue-100 bg-blue-50 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-semibold text-gray-900">Choose your CVs</h2>
+                <p className="text-sm text-gray-600">Choose which saved CVs to use for this job search.</p>
+              </div>
+              <span className="text-sm font-medium text-blue-700">{selectedCvIds.length} selected</span>
+            </div>
+            {importedCvs.length === 0 ? (
+              <p className="mt-3 text-sm text-gray-600">No CVs imported yet. Upload a PDF or DOCX above.</p>
+            ) : (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {importedCvs.map((cv) => (
+                  <label key={cv.id} className="flex cursor-pointer items-center gap-3 rounded-md border border-blue-100 bg-white px-3 py-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={selectedCvIds.includes(cv.id)}
+                      onChange={(event) => setSelectedCvIds((current) => event.target.checked ? [...current, cv.id] : current.filter((id) => id !== cv.id))}
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <span className="min-w-0 flex-1 truncate font-medium" title={cv.name}>{cv.name}</span>
+                    <span className="shrink-0 text-xs text-gray-400">{cv.size ? `${Math.ceil(cv.size / 1024)} KB` : 'CV'}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <div className="mt-7 border-t border-slate-100 pt-6">
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-900">Search preferences</h2>
+              <p className="mt-1 text-sm text-slate-500">Tell the search pipeline which roles to prioritize and avoid.</p>
+            </div>
+            <div className="grid w-full gap-4 md:grid-cols-2">
             <label className="text-sm text-gray-700">
               <span className="mb-2 block font-medium">Target roles</span>
               <textarea
@@ -593,6 +723,7 @@ export default function Home() {
                 className="w-full rounded-lg border border-gray-300 p-3 text-sm focus:border-blue-500 focus:outline-none"
               />
             </label>
+          </div>
           </div>
           <div className="mt-3 flex w-full flex-wrap items-center gap-3">
             <button
@@ -625,11 +756,11 @@ export default function Home() {
 
           <button 
             type="submit" 
-            disabled={files.length === 0 || loading}
-            className="mt-6 px-8 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all shadow-sm hover:shadow-md"
+            disabled={(files.length === 0 && selectedCvIds.length === 0) || loading || uploadingCvs}
+            className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-8 py-3 font-medium text-white shadow-sm transition-all hover:bg-blue-700 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 md:w-auto"
           >
             {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Briefcase className="w-5 h-5" />}
-            {loading ? 'Agents Running (This takes a moment)...' : 'Run Search Pipeline'}
+            {uploadingCvs ? 'Saving CVs...' : loading ? 'Agents Running (This takes a moment)...' : 'Run Search Pipeline'}
           </button>
         </form>
       </div>
@@ -638,7 +769,8 @@ export default function Home() {
       {searchMessage && (
         <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm flex items-center gap-2">
           <Briefcase className="w-4 h-4" />
-          {searchMessage}
+          <span>{searchMessage}</span>
+          {searchCompleted && <Link href="/open-jobs" className="ml-auto inline-flex rounded-md bg-blue-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-800">View open jobs</Link>}
         </div>
       )}
 
@@ -671,7 +803,7 @@ export default function Home() {
         </div>
       )}
 
-      <section className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-5">
+      {false && <section className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-5">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Verify saved jobs</h2>
@@ -707,10 +839,10 @@ export default function Home() {
             </span>
           ))}
         </div>
-      </section>
+      </section>}
 
-      {/* Results Table Section */}
-      {jobs.length > 0 && (
+      {/* Results are available through the Open jobs and Applied jobs navigation pages. */}
+      {false && jobs.length > 0 && (
         <section>
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold">📋 Open Jobs ({openJobs.length} of {jobs.length})</h2>
@@ -731,7 +863,17 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mb-6 grid gap-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_180px_180px_180px_180px_180px]">
+          <div className="mb-6 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-3">
+              <div>
+                <h3 className="font-semibold text-gray-900">Refine results</h3>
+                <p className="mt-1 text-xs text-gray-500">Showing {filteredJobs.length} of {jobs.length} saved jobs</p>
+              </div>
+              <button type="button" onClick={clearJobFilters} disabled={activeFilterCount === 0} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40">
+                Clear filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+              </button>
+            </div>
+            <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_180px_180px] lg:grid-cols-[minmax(0,1fr)_180px_180px_180px_180px_180px]">
             <label className="text-sm text-gray-700">
               <span className="mb-2 flex items-center gap-2 font-medium"><Filter className="h-4 w-4" /> Search jobs</span>
               <input
@@ -808,6 +950,7 @@ export default function Home() {
                 <option>Not applied</option>
               </select>
             </label>
+          </div>
           </div>
           
           <div className="overflow-x-auto bg-white rounded-xl shadow-sm border border-gray-100">
@@ -903,7 +1046,7 @@ export default function Home() {
                                 formData.append('company', job.Company || '');
                                 formData.append('status', nextStatus);
 
-                                fetch(getApiUrl('/api/jobs/status'), {
+                                apiFetch('/api/jobs/status', {
                                   method: 'POST',
                                   body: formData,
                                 })

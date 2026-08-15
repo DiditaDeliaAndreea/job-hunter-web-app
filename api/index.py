@@ -18,16 +18,18 @@ from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pypdf import PdfReader
 from docx import Document
+from google.api_core.exceptions import NotFound as GoogleNotFound
 
 # Import CSV utilities
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.csv_utils import append_jobs_to_csv, dismiss_job_in_csv, import_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
+from utils.csv_utils import append_jobs_to_csv, dismiss_job_in_csv, import_jobs_from_csv, import_local_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
+from utils import firebase_utils
 
 # Configure logging
 logging.basicConfig(
@@ -38,6 +40,30 @@ logger = logging.getLogger(__name__)
 
 # Load local environment variables (.env)
 load_dotenv()
+
+
+def get_current_user(authorization: str | None = Header(default=None)) -> Dict[str, Any]:
+    """Verify a Firebase ID token supplied by the browser."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Sign in is required")
+    try:
+        return firebase_utils.verify_id_token(authorization[7:].strip())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Firebase server credentials are not configured") from exc
+    except Exception as exc:
+        logger.warning("Firebase token verification failed: %s", exc)
+        raise HTTPException(status_code=401, detail="Invalid or expired sign-in session") from exc
+
+
+def get_prompt_learning_context(user_id: str) -> str:
+    preferences = firebase_utils.fetch_prompt_preferences(user_id)
+    if not preferences:
+        return "No saved tailoring preferences yet."
+    return "\n".join(
+        f"- Previous user preference ({record.get('interaction_type', 'tailor')}): {record.get('prompt', '')}"
+        for record in preferences
+        if str(record.get("prompt", "")).strip()
+    )
 
 @asynccontextmanager
 async def validate_environment(_: FastAPI):
@@ -385,9 +411,9 @@ def build_applied_job_preferences(jobs: List[Dict[str, Any]]) -> str:
     )
 
 
-def update_verification_rows(rows: List[Dict[str, Any]]) -> None:
+def update_verification_rows(rows: List[Dict[str, Any]], user_id: str) -> None:
     """Merge verification results into the saved CSV by title and company."""
-    jobs = import_jobs_from_csv("job_matches.csv")
+    jobs = import_jobs_from_csv("job_matches.csv", user_id)
     result_map = {
         (str(row.get("Job Title", "")).strip().lower(), str(row.get("Company", "").strip().lower())): row
         for row in rows
@@ -424,13 +450,13 @@ def update_verification_rows(rows: List[Dict[str, Any]]) -> None:
             job["URL"] = official_url
             job["Listing Source"] = "Official company website"
     from utils.csv_utils import export_jobs_to_csv
-    export_jobs_to_csv(jobs, "job_matches.csv")
+    export_jobs_to_csv(jobs, "job_matches.csv", user_id)
 
 
-async def run_saved_job_verification(verification_id: str) -> None:
+async def run_saved_job_verification(verification_id: str, user_id: str) -> None:
     """Check saved roles in AI batches and persist results after each batch."""
     try:
-        jobs = import_jobs_from_csv("job_matches.csv")
+        jobs = import_jobs_from_csv("job_matches.csv", user_id)
         jobs = [
             job for job in jobs
             if job.get("User Dismissed", "").lower() != "yes"
@@ -468,7 +494,7 @@ Verification Status, Verification Notes, and Official Listing URL.
                 if not fallback_response:
                     raise
                 verification_results = extract_json_array(fallback_response)
-            update_verification_rows(verification_results)
+            update_verification_rows(verification_results, user_id)
             update_search_status(verification_id, f"Verified batch {batch_index}/{len(batches)} and saved results to CSV.", progress)
         ACTIVE_SEARCHES[verification_id]["status"] = "complete"
         ACTIVE_SEARCHES[verification_id]["progress"] = 100
@@ -502,6 +528,7 @@ async def run_search_pipeline(
     target_roles: List[str],
     excluded_roles: List[str],
     reuse_cv_analysis: bool,
+    user_id: str,
 ) -> None:
     """Run the CV analysis + job search flow and save completion state for status polling."""
     try:
@@ -566,10 +593,11 @@ async def run_search_pipeline(
             target_roles=target_roles,
             excluded_roles=excluded_roles,
             cv_names=[filename for filename, _ in files],
+            user_id=user_id,
         )
 
         if not matched_jobs:
-            existing_jobs = import_jobs_from_csv("job_matches.csv")
+            existing_jobs = import_jobs_from_csv("job_matches.csv", user_id)
             if existing_jobs:
                 matched_jobs = existing_jobs
                 update_search_status(search_id, f"Keeping {len(existing_jobs)} previous valid matches...", 72)
@@ -579,7 +607,7 @@ async def run_search_pipeline(
 
         if matched_jobs:
             update_search_status(search_id, f"Persisting {len(matched_jobs)} matches to CSV...", 82)
-            append_jobs_to_csv(matched_jobs, "job_matches.csv")
+            append_jobs_to_csv(matched_jobs, "job_matches.csv", user_id=user_id)
         else:
             update_search_status(search_id, "Skipping CSV write because no valid jobs were returned.", 82)
 
@@ -802,6 +830,7 @@ async def tailor_cv_for_job(
     company: str = Form(...),
     job_description: str = Form(...),
     user_prompt: str = Form(""),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Generate a truthful, keyword-aligned CV draft for one saved job."""
     content = await cv_file.read()
@@ -809,6 +838,10 @@ async def tailor_cv_for_job(
         raise HTTPException(status_code=400, detail="The selected CV file is empty.")
 
     cv_text = await extract_cv_text_from_bytes(cv_file.filename or "uploaded-cv", content)
+    if user_prompt.strip():
+        firebase_utils.save_prompt_preference(
+            current_user["uid"], user_prompt, job_title, company, "tailor"
+        )
     instructions = """
 You tailor a candidate's CV for one specific job. Preserve the candidate's actual experience and
 never invent employers, dates, achievements, tools, certifications, responsibilities, or metrics.
@@ -844,6 +877,13 @@ instructions. Do not rename sections to generic headings when the source already
 Keep the wording concise and scannable. Do not include a cover letter, keyword list detached from
 evidence, match score, editing commentary, or claims unsupported by the source CV. If a job
 requirement is not supported, do not add it; leave it out or make the gap clear rather than guessing.
+"""
+    instructions += f"""
+USER'S SAVED TAILORING PREFERENCES:
+{get_prompt_learning_context(current_user['uid'])}
+
+Treat these as style preferences gathered from the same user. Apply them only when they do not conflict
+with the source CV, current job, or truthfulness requirements.
 """
     prompt = f"""
 Target job: {job_title}
@@ -883,6 +923,21 @@ ATS CHECK BEFORE RETURNING:
     return JSONResponse({"tailored_cv": tailored_cv})
 
 
+@app.post("/api/ai/prompt-preferences")
+async def save_ai_prompt_preference(
+    prompt: str = Form(...),
+    job_title: str = Form(""),
+    company: str = Form(""),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail="Enter a tailoring preference first.")
+    record = firebase_utils.save_prompt_preference(
+        current_user["uid"], prompt, job_title, company, "saved_preference"
+    )
+    return JSONResponse({"saved": True, "preference": record})
+
+
 @app.post("/api/jobs/tailor-cv/chat")
 async def ask_cv_tailoring_question(
     cv_file: UploadFile = File(...),
@@ -890,6 +945,7 @@ async def ask_cv_tailoring_question(
     company: str = Form(...),
     job_description: str = Form(...),
     user_prompt: str = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Answer a direct CV-tailoring question for one job without generating a full CV."""
     if not user_prompt.strip():
@@ -900,6 +956,9 @@ async def ask_cv_tailoring_question(
         raise HTTPException(status_code=400, detail="The selected CV file is empty.")
 
     cv_text = await extract_cv_text_from_bytes(cv_file.filename or "uploaded-cv", content)
+    firebase_utils.save_prompt_preference(
+        current_user["uid"], user_prompt, job_title, company, "question"
+    )
     instructions = """
 You are a CV tailoring advisor. Answer the user's direct question using the job description and source
 CV. First identify meaningful ATS keywords and requirements in the job description, then check which
@@ -908,6 +967,12 @@ Never invent experience, tools, employers, dates, certifications, metrics, or ac
 the source CV's section names, bullet style, spacing pattern, and emphasis conventions. Be concise.
 This is a one-request interaction: do not claim that the user's prompt trains, fine-tunes, or changes
 the underlying model.
+"""
+    instructions += f"""
+USER'S SAVED TAILORING PREFERENCES:
+{get_prompt_learning_context(current_user['uid'])}
+
+Use these as secondary style preferences, while prioritizing the current question and truthful CV evidence.
 """
     prompt = f"""
 Target job: {job_title}
@@ -936,6 +1001,10 @@ SOURCE CV:
         logger.error(f"CV tailoring chat failed: {type(exc).__name__}: {exc}")
         raise HTTPException(status_code=503, detail="Could not answer the tailoring question.") from exc
 
+    firebase_utils.save_prompt_preference(
+        current_user["uid"], user_prompt, job_title, company, "question", answer
+    )
+
     return JSONResponse({"answer": answer})
 
 
@@ -945,6 +1014,7 @@ async def run_incremental_job_finder(
     target_roles: List[str] | None = None,
     excluded_roles: List[str] | None = None,
     cv_names: List[str] | None = None,
+    user_id: str | None = None,
 ) -> List[Dict[str, Any]]:
     """
     AGENT 2: Searches for jobs in batches using Google Search and matches to candidate.
@@ -966,7 +1036,7 @@ async def run_incremental_job_finder(
     batch_size = 5
     roles_batches = [target_roles[i:i + batch_size] for i in range(0, len(target_roles), batch_size)]
     excluded_str = ", ".join(excluded_roles)
-    existing_jobs = import_jobs_from_csv("job_matches.csv")
+    existing_jobs = import_jobs_from_csv("job_matches.csv", user_id)
     applied_job_preferences = build_applied_job_preferences(existing_jobs)
     saved_job_keys = {
         (
@@ -1128,7 +1198,10 @@ async def run_incremental_job_finder(
                     valid_jobs = keep_new_jobs(valid_jobs)
                     all_jobs.extend(valid_jobs)
                     if len(valid_jobs) > 0:
-                        append_jobs_to_csv(valid_jobs, "job_matches.csv")
+                        if user_id:
+                            append_jobs_to_csv(valid_jobs, "job_matches.csv", user_id=user_id)
+                        else:
+                            append_jobs_to_csv(valid_jobs, "job_matches.csv")
                         result_message = f"Batch {batch_idx}: found {len(valid_jobs)} jobs and saved them to CSV."
                         logger.info(f"✅ {result_message}")
                     else:
@@ -1161,7 +1234,10 @@ async def run_incremental_job_finder(
                 valid_jobs = keep_new_jobs(valid_jobs)
                 all_jobs.extend(valid_jobs)
                 if valid_jobs:
-                    append_jobs_to_csv(valid_jobs, "job_matches.csv")
+                    if user_id:
+                        append_jobs_to_csv(valid_jobs, "job_matches.csv", user_id=user_id)
+                    else:
+                        append_jobs_to_csv(valid_jobs, "job_matches.csv")
                     result_message = f"Batch {batch_idx}: recovered {len(valid_jobs)} jobs with OpenAI and saved them to CSV."
                 else:
                     result_message = f"Batch {batch_idx}: both AI responses were not parseable; no jobs parsed."
@@ -1294,15 +1370,24 @@ async def start_search(
     target_roles: str | None = Form(default=None),
     excluded_roles: str | None = Form(default=None),
     reuse_cv_analysis: bool = Form(default=True),
+    cv_ids: str | None = Form(default=None),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Start a background job search and return a live search ID for polling."""
     uploaded_files = list(files)
     if file is not None:
         uploaded_files.append(file)
-    if not uploaded_files:
+    file_payloads = [(uploaded_file.filename or "unknown.pdf", await uploaded_file.read()) for uploaded_file in uploaded_files]
+    selected_cv_ids = [cv_id.strip() for cv_id in (cv_ids or "").split(",") if cv_id.strip()]
+    for cv_id in selected_cv_ids:
+        try:
+            cv_record, cv_content = firebase_utils.download_cv(current_user["uid"], cv_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Selected CV not found: {cv_id}") from exc
+        file_payloads.append((str(cv_record.get("name") or "uploaded-cv.pdf"), cv_content))
+    if not file_payloads:
         raise HTTPException(status_code=400, detail="Upload at least one PDF or DOCX CV file")
 
-    file_payloads = [(uploaded_file.filename or "unknown.pdf", await uploaded_file.read()) for uploaded_file in uploaded_files]
     parsed_target_roles = parse_role_input(target_roles, TARGET_ROLES)
     parsed_excluded_roles = parse_role_input(excluded_roles, EXCLUDED_ROLES)
     search_id = f"search-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
@@ -1313,6 +1398,7 @@ async def start_search(
         "logs": ["Starting job search..."],
         "total_files": len(file_payloads),
         "reuse_cv_analysis": reuse_cv_analysis,
+        "user_id": current_user["uid"],
     }
     asyncio.create_task(run_search_pipeline(
         search_id,
@@ -1320,6 +1406,7 @@ async def start_search(
         parsed_target_roles,
         parsed_excluded_roles,
         reuse_cv_analysis,
+        current_user["uid"],
     ))
     return JSONResponse({
         "search_id": search_id,
@@ -1328,11 +1415,71 @@ async def start_search(
     })
 
 
+@app.get("/api/cvs")
+async def get_cvs(current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    try:
+        return JSONResponse({"cvs": firebase_utils.fetch_cvs(current_user["uid"])})
+    except Exception as exc:
+        logger.error("Error fetching CVs: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch imported CVs") from exc
+
+
+@app.post("/api/cvs")
+async def upload_cvs(
+    files: List[UploadFile] = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    saved_cvs = []
+    for uploaded_file in files:
+        filename = uploaded_file.filename or "uploaded-cv.pdf"
+        if not filename.lower().endswith((".pdf", ".docx")):
+            raise HTTPException(status_code=400, detail="Only PDF and DOCX CVs are supported")
+        content = await uploaded_file.read()
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Each CV must be 10MB or smaller")
+        try:
+            saved_cvs.append(firebase_utils.save_cv(
+                current_user["uid"],
+                filename,
+                uploaded_file.content_type or "application/octet-stream",
+                content,
+            ))
+        except GoogleNotFound as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Firebase Storage is not enabled for this project. Open Firebase Console > Storage and click Get started, then retry.",
+            ) from exc
+    return JSONResponse({"cvs": saved_cvs})
+
+
+@app.delete("/api/cvs/{cv_id}")
+async def delete_cv(cv_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    try:
+        firebase_utils.delete_cv(current_user["uid"], cv_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="CV not found") from exc
+    return JSONResponse({"deleted": True, "cv_id": cv_id})
+
+
+@app.patch("/api/cvs/{cv_id}")
+async def rename_cv(cv_id: str, name: str = Form(...), current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    new_name = name.strip()
+    if not new_name.lower().endswith((".pdf", ".docx")):
+        raise HTTPException(status_code=400, detail="CV name must end with .pdf or .docx")
+    if "/" in new_name or "\\" in new_name:
+        raise HTTPException(status_code=400, detail="CV name cannot contain folder separators")
+    try:
+        record = firebase_utils.rename_cv(current_user["uid"], cv_id, new_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="CV not found") from exc
+    return JSONResponse({"cv": record})
+
+
 @app.get("/api/search/status/{search_id}")
-async def get_search_status(search_id: str) -> JSONResponse:
+async def get_search_status(search_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
     """Return the current progress and log stream for an active search."""
     status = ACTIVE_SEARCHES.get(search_id)
-    if not status:
+    if not status or status.get("user_id") != current_user["uid"]:
         raise HTTPException(status_code=404, detail="Search not found")
 
     return JSONResponse(
@@ -1349,10 +1496,10 @@ async def get_search_status(search_id: str) -> JSONResponse:
 
 
 @app.get("/api/search/result/{search_id}")
-async def get_search_result(search_id: str) -> StreamingResponse:
+async def get_search_result(search_id: str, current_user: Dict[str, Any] = Depends(get_current_user)) -> StreamingResponse:
     """Download the Excel workbook for a completed search."""
     status = ACTIVE_SEARCHES.get(search_id)
-    if not status or status.get("status") != "complete":
+    if not status or status.get("user_id") != current_user["uid"] or status.get("status") != "complete":
         raise HTTPException(status_code=404, detail="Search not complete")
 
     excel_bytes = status.get("excel_bytes")
@@ -1367,7 +1514,7 @@ async def get_search_result(search_id: str) -> StreamingResponse:
 
 
 @app.get("/api/jobs")
-async def get_jobs() -> JSONResponse:
+async def get_jobs(current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
     """
     Fetch all jobs from CSV file.
     
@@ -1375,7 +1522,7 @@ async def get_jobs() -> JSONResponse:
         JSON array of job objects
     """
     try:
-        jobs = import_jobs_from_csv("job_matches.csv")
+        jobs = import_jobs_from_csv("job_matches.csv", current_user["uid"])
         jobs = [job for job in jobs if job.get("User Dismissed", "").lower() != "yes"]
         
         if not jobs:
@@ -1398,13 +1545,24 @@ async def get_jobs() -> JSONResponse:
         )
 
 
+@app.post("/api/jobs/import-csv")
+async def import_existing_csv_jobs(current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    """Migrate local job_matches.csv records into the signed-in user's store."""
+    local_jobs = import_local_jobs_from_csv("job_matches.csv")
+    if not local_jobs:
+        return JSONResponse({"imported": 0, "message": "No local job_matches.csv records found."})
+    append_jobs_to_csv(local_jobs, "job_matches.csv", user_id=current_user["uid"])
+    return JSONResponse({"imported": len(local_jobs), "message": f"Imported {len(local_jobs)} CSV jobs."})
+
+
 @app.post("/api/jobs/dismiss")
 async def dismiss_job(
     job_title: str = Form(...),
     company: str = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Hide a job from the listing while retaining it in CSV for deduplication."""
-    dismissed = dismiss_job_in_csv(job_title, company, "job_matches.csv")
+    dismissed = dismiss_job_in_csv(job_title, company, "job_matches.csv", current_user["uid"])
     if not dismissed:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse({"dismissed": True, "message": "Job dismissed and retained in CSV"})
@@ -1415,11 +1573,12 @@ async def update_job_url(
     job_title: str = Form(...),
     company: str = Form(...),
     url: str = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Save a user-confirmed preferred listing URL for a job."""
     if not re.match(r"^https?://[^\s]+$", url.strip(), re.IGNORECASE):
         raise HTTPException(status_code=400, detail="Enter a valid http(s) URL")
-    updated = update_job_url_in_csv(job_title, company, url.strip(), "job_matches.csv")
+    updated = update_job_url_in_csv(job_title, company, url.strip(), "job_matches.csv", current_user["uid"])
     if not updated:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse({"updated": True, "url": url.strip()})
@@ -1430,9 +1589,10 @@ async def update_job_applied(
     job_title: str = Form(...),
     company: str = Form(...),
     applied: bool = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Persist the user's applied/not-applied status for a job."""
-    updated = update_job_applied_in_csv(job_title, company, applied, "job_matches.csv")
+    updated = update_job_applied_in_csv(job_title, company, applied, "job_matches.csv", current_user["uid"])
     if not updated:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse({"updated": True, "applied": applied})
@@ -1443,19 +1603,20 @@ async def update_job_status(
     job_title: str = Form(...),
     company: str = Form(...),
     status: str = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Persist a manual verification status for a job row."""
     if not status.strip():
         raise HTTPException(status_code=400, detail="Status is required")
 
-    updated = update_job_status_in_csv(job_title, company, status.strip(), "job_matches.csv")
+    updated = update_job_status_in_csv(job_title, company, status.strip(), "job_matches.csv", current_user["uid"])
     if not updated:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse({"updated": True, "status": status.strip()})
 
 
 @app.post("/api/jobs/verify/start")
-async def start_job_verification() -> JSONResponse:
+async def start_job_verification(current_user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
     """Start AI verification of the saved job listings."""
     verification_id = f"verify-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
     ACTIVE_SEARCHES[verification_id] = {
@@ -1463,7 +1624,8 @@ async def start_job_verification() -> JSONResponse:
         "progress": 0,
         "message": "Starting saved job verification...",
         "logs": ["Starting saved job verification..."],
+        "user_id": current_user["uid"],
     }
-    asyncio.create_task(run_saved_job_verification(verification_id))
+    asyncio.create_task(run_saved_job_verification(verification_id, current_user["uid"]))
     return JSONResponse({"verification_id": verification_id, "status": "queued"})
 
