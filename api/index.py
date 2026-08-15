@@ -97,10 +97,14 @@ async def health() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 # Add CORS middleware to allow requests from frontend
-frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+frontend_urls = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("FRONTEND_URL", "http://localhost:3000").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_url, "http://localhost:3000", "http://localhost:8000"],
+    allow_origins=list(dict.fromkeys(frontend_urls + ["http://localhost:3000", "http://localhost:8000"])),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
