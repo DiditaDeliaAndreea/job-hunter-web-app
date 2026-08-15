@@ -10,7 +10,7 @@ const links = [
   { href: '/', label: 'Find jobs', icon: BriefcaseBusiness },
   { href: '/open-jobs', label: 'Open jobs', icon: FolderOpen },
   { href: '/applied-jobs', label: 'Applied jobs', icon: BriefcaseBusiness },
-  { href: '/cvs', label: 'My CVs', icon: FileText },
+  { href: '/my-cvs', label: 'My CVs', icon: FileText },
   { href: '/preferences', label: 'Job preferences', icon: Settings },
   { href: '/stats', label: 'Stats', icon: BarChart3 },
   { href: '/account', label: 'Account', icon: UserRound },
