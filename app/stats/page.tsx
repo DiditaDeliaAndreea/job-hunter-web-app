@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BarChart3, BriefcaseBusiness, CheckCircle2, Clock3, RefreshCw, Target } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import { readCachedJobs, writeCachedJobs } from '../../lib/client-cache';
 
 type Job = Record<string, string | undefined>;
 
@@ -99,19 +100,21 @@ function Breakdown({ title, items, total }: { title: string; items: CountItem[];
 }
 
 export default function StatsPage() {
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [jobs, setJobs] = useState<Job[]>(() => readCachedJobs<Job>());
+  const [loading, setLoading] = useState(() => readCachedJobs<Job>().length === 0);
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const loadJobs = async () => {
-    setLoading(true);
+    if (jobs.length === 0) setLoading(true);
     setError('');
     try {
       const response = await apiFetch('/api/jobs', { cache: 'no-store' });
       if (!response.ok) throw new Error(`Jobs API request failed: ${response.status}`);
       const data = await response.json();
-      setJobs(Array.isArray(data.jobs) ? data.jobs : []);
+      const savedJobs = Array.isArray(data.jobs) ? data.jobs as Job[] : [];
+      writeCachedJobs(savedJobs);
+      setJobs(savedJobs);
       setLastUpdated(new Date());
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Could not load saved jobs.');

@@ -4,13 +4,15 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { ArrowUpRight, BriefcaseBusiness, CheckCircle2, ExternalLink, RefreshCw } from 'lucide-react'
 import { apiFetch } from '../lib/api'
+import { readCachedJobs, writeCachedJobs } from '../lib/client-cache'
 
 type Job = Record<string, string | undefined>
 type IndexedJob = { job: Job; index: number }
 
 export default function JobList({ applied }: { applied: boolean }) {
-  const [jobs, setJobs] = useState<IndexedJob[]>([])
-  const [loading, setLoading] = useState(true)
+  const cachedJobs = readCachedJobs<Job>()
+  const [jobs, setJobs] = useState<IndexedJob[]>(() => cachedJobs.map((job, index) => ({ job, index })).filter(({ job }) => (job.Applied === 'Yes') === applied))
+  const [loading, setLoading] = useState(cachedJobs.length === 0)
   const [error, setError] = useState('')
   const [verifying, setVerifying] = useState(false)
   const [verificationProgress, setVerificationProgress] = useState(0)
@@ -18,13 +20,14 @@ export default function JobList({ applied }: { applied: boolean }) {
   const [verificationLogs, setVerificationLogs] = useState<string[]>([])
 
   const loadJobs = async () => {
-    setLoading(true)
+    if (jobs.length === 0) setLoading(true)
     setError('')
     try {
       const response = await apiFetch('/api/jobs', { cache: 'no-store' })
       const data = await response.json()
       if (!response.ok) throw new Error(data?.detail || 'Could not load jobs.')
       const savedJobs = Array.isArray(data.jobs) ? data.jobs as Job[] : []
+      writeCachedJobs(savedJobs)
       setJobs(savedJobs.map((job, index) => ({ job, index })).filter(({ job }) => (job.Applied === 'Yes') === applied))
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Could not load jobs.')
