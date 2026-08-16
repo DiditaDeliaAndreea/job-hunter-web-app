@@ -5,12 +5,13 @@ import Link from 'next/link'
 import { ArrowLeft, FileText, Upload } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import mammoth from 'mammoth'
+import { readCachedCvs, writeCachedCvs } from '../lib/client-cache'
 
 type ImportedCv = { id: string; name: string; size?: number; created_at?: string }
 
 export default function CvPage() {
-  const [cvs, setCvs] = useState<ImportedCv[]>([])
-  const [loading, setLoading] = useState(true)
+  const [cvs, setCvs] = useState<ImportedCv[]>(() => readCachedCvs<ImportedCv>())
+  const [loading, setLoading] = useState(() => readCachedCvs<ImportedCv>().length === 0)
   const [message, setMessage] = useState('')
   const [selectedCv, setSelectedCv] = useState<ImportedCv | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -18,12 +19,14 @@ export default function CvPage() {
   const [previewLoading, setPreviewLoading] = useState(false)
 
   const loadCvs = async () => {
-    setLoading(true)
+    if (cvs.length === 0) setLoading(true)
     try {
       const response = await apiFetch('/api/cvs', { cache: 'no-store' })
       const data = await response.json()
       if (!response.ok) throw new Error(data?.detail || 'Could not load CVs.')
-      setCvs(Array.isArray(data.cvs) ? data.cvs : [])
+      const records = Array.isArray(data.cvs) ? data.cvs as ImportedCv[] : []
+      writeCachedCvs(records)
+      setCvs(records)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not load CVs.')
     } finally {
@@ -94,6 +97,7 @@ export default function CvPage() {
       const data = await response.json()
       if (!response.ok) throw new Error(data?.detail || 'Could not remove CV.')
       setCvs((current) => current.filter((item) => item.id !== cv.id))
+      writeCachedCvs(cvs.filter((item) => item.id !== cv.id))
       if (selectedCv?.id === cv.id) setSelectedCv(null)
       setMessage(`${cv.name} was removed.`)
     } catch (error) {
@@ -115,6 +119,7 @@ export default function CvPage() {
       const data = await response.json()
       if (!response.ok) throw new Error(data?.detail || 'Could not rename CV.')
       setCvs((current) => current.map((item) => item.id === cv.id ? { ...item, name: data.cv.name } : item))
+      writeCachedCvs(cvs.map((item) => item.id === cv.id ? { ...item, name: data.cv.name } : item))
       setSelectedCv((current) => current?.id === cv.id ? { ...current, name: data.cv.name } : current)
       setMessage(`Renamed to ${data.cv.name}.`)
     } catch (error) {

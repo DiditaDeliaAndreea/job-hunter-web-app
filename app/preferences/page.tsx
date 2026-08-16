@@ -4,12 +4,14 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Save } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
+import { readCachedPreferences, writeCachedPreferences } from '../../lib/client-cache'
 
 const STORAGE_KEY = 'careermatch-role-preferences'
 
 export default function PreferencesPage() {
-  const [targetRoles, setTargetRoles] = useState<string[]>([])
-  const [excludedRoles, setExcludedRoles] = useState<string[]>([])
+  const cachedPreferences = readCachedPreferences()
+  const [targetRoles, setTargetRoles] = useState<string[]>(cachedPreferences?.targetRoles || [])
+  const [excludedRoles, setExcludedRoles] = useState<string[]>(cachedPreferences?.excludedRoles || [])
   const [targetInput, setTargetInput] = useState('')
   const [excludedInput, setExcludedInput] = useState('')
   const [message, setMessage] = useState('')
@@ -47,6 +49,7 @@ export default function PreferencesPage() {
         const excluded = remoteExcludedRoles.length ? remoteExcludedRoles : localPreferences?.excludedRoles || []
         setTargetRoles(target)
         setExcludedRoles(excluded)
+        writeCachedPreferences({ targetRoles: target, excludedRoles: excluded })
         if ((!remoteTargetRoles.length && !remoteExcludedRoles.length) && (target.length || excluded.length)) {
           const formData = new FormData()
           formData.append('target_roles', target.join('\n'))
@@ -77,6 +80,7 @@ export default function PreferencesPage() {
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(async (response) => {
       if (!response.ok) throw new Error('Could not save preferences.')
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ targetRoles: nextTargetRoles.join('\n'), excludedRoles: nextExcludedRoles.join('\n') }))
+      writeCachedPreferences({ targetRoles: nextTargetRoles, excludedRoles: nextExcludedRoles })
       setMessage('Job preferences saved for future searches.')
     }).catch((error) => setMessage(error instanceof Error ? error.message : 'Could not save preferences.'))
   }
@@ -89,6 +93,7 @@ export default function PreferencesPage() {
     const formData = new FormData()
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(() => {
       window.localStorage.removeItem(STORAGE_KEY)
+      writeCachedPreferences({ targetRoles: [], excludedRoles: [] })
       setMessage('Job preferences cleared. Default roles will be used.')
     }).catch(() => setMessage('Could not clear preferences.'))
   }

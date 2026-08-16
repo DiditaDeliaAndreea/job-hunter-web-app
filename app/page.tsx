@@ -6,7 +6,7 @@ import * as XLSX from 'xlsx';
 import { Upload, FileDown, Loader2, Briefcase, MapPin, X, RefreshCw, Filter, ArrowUpDown, BarChart3 } from 'lucide-react';
 import { saveUploadedCvs } from '../utils/browserStorage';
 import { apiFetch } from '../lib/api';
-import { writeCachedJobs } from '../lib/client-cache';
+import { readCachedCvs, readCachedJobs, readCachedPreferences, writeCachedCvs, writeCachedJobs, writeCachedPreferences } from '../lib/client-cache';
 
 const ROLE_PREFERENCES_STORAGE_KEY = 'careermatch-role-preferences';
 
@@ -68,16 +68,19 @@ function getPreferredJobUrl(job: Record<string, any>): string | null {
 }
 
 export default function Home() {
+  const cachedJobs = readCachedJobs<any>();
+  const cachedCvs = readCachedCvs<ImportedCv>();
+  const cachedPreferences = readCachedPreferences();
   const [files, setFiles] = useState<File[]>([]);
-  const [importedCvs, setImportedCvs] = useState<ImportedCv[]>([]);
-  const [selectedCvIds, setSelectedCvIds] = useState<string[]>([]);
+  const [importedCvs, setImportedCvs] = useState<ImportedCv[]>(cachedCvs);
+  const [selectedCvIds, setSelectedCvIds] = useState<string[]>(cachedCvs.map((record) => record.id));
   const [uploadingCvs, setUploadingCvs] = useState(false);
   const [importingCsv, setImportingCsv] = useState(false);
-  const [targetRoles, setTargetRoles] = useState('');
-  const [excludedRoles, setExcludedRoles] = useState('');
+  const [targetRoles, setTargetRoles] = useState(cachedPreferences?.targetRoles.join('\n') || '');
+  const [excludedRoles, setExcludedRoles] = useState(cachedPreferences?.excludedRoles.join('\n') || '');
   const [reuseCvAnalysis, setReuseCvAnalysis] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [jobs, setJobs] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<any[]>(cachedJobs);
   const [jobFilter, setJobFilter] = useState('');
   const [jobSort, setJobSort] = useState('fit-score-desc');
   const [workingTypeFilter, setWorkingTypeFilter] = useState('All');
@@ -122,8 +125,13 @@ export default function Home() {
       const response = await apiFetch('/api/preferences/roles', { cache: 'no-store' });
       const preferences = await response.json();
       if (!response.ok) return;
-      setTargetRoles(Array.isArray(preferences.target_roles) ? preferences.target_roles.join('\n') : '');
-      setExcludedRoles(Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles.join('\n') : '');
+      const nextPreferences = {
+        targetRoles: Array.isArray(preferences.target_roles) ? preferences.target_roles : [],
+        excludedRoles: Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles : [],
+      };
+      writeCachedPreferences(nextPreferences);
+      setTargetRoles(nextPreferences.targetRoles.join('\n'));
+      setExcludedRoles(nextPreferences.excludedRoles.join('\n'));
     } catch {
       // Local preferences remain available as a fallback.
     }
@@ -135,6 +143,7 @@ export default function Home() {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || `Could not load imported CVs (${response.status}).`);
       const records = Array.isArray(data.cvs) ? data.cvs as ImportedCv[] : [];
+      writeCachedCvs(records);
       setImportedCvs(records);
       setSelectedCvIds(records.map((record) => record.id));
     } catch (error) {
@@ -256,6 +265,10 @@ export default function Home() {
       ROLE_PREFERENCES_STORAGE_KEY,
       JSON.stringify({ targetRoles, excludedRoles })
     );
+    writeCachedPreferences({
+      targetRoles: targetRoles.split(/[\n,]/).map((role) => role.trim()).filter(Boolean),
+      excludedRoles: excludedRoles.split(/[\n,]/).map((role) => role.trim()).filter(Boolean),
+    });
     const formData = new FormData();
     formData.append('target_roles', targetRoles);
     formData.append('excluded_roles', excludedRoles);
@@ -266,6 +279,7 @@ export default function Home() {
 
   const clearSavedRolePreferences = () => {
     window.localStorage.removeItem(ROLE_PREFERENCES_STORAGE_KEY);
+    writeCachedPreferences({ targetRoles: [], excludedRoles: [] });
     setTargetRoles('');
     setExcludedRoles('');
     const formData = new FormData();
