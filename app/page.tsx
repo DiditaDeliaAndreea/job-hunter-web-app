@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import { Upload, FileDown, Loader2, Briefcase, MapPin, X, RefreshCw, Filter, ArrowUpDown, BarChart3 } from 'lucide-react';
 import { saveUploadedCvs } from '../utils/browserStorage';
 import { apiFetch } from '../lib/api';
+import { writeCachedJobs } from '../lib/client-cache';
 
 const ROLE_PREFERENCES_STORAGE_KEY = 'careermatch-role-preferences';
 
@@ -151,6 +152,7 @@ export default function Home() {
 
       const data = await response.json();
       const csvJobs = data.jobs || [];
+      writeCachedJobs(csvJobs);
       setJobs(csvJobs);
 
       if (updateMessage && csvJobs.length > 0) {
