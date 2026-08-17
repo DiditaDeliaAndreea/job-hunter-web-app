@@ -20,6 +20,7 @@ CSV_FIELDS = [
     "Salary",
     "Fit Score (%)",
     "Match Reasons",
+    "Missing Requirements",
     "Job Description",
     "Recommended CV",
     "CV Tailoring Recommendation",

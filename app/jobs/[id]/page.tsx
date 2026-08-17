@@ -149,26 +149,52 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       return () => undefined;
     }
 
-    getUploadedCv(recommendedCv)
-      .then(async (file) => {
-        if (!active || !file) return;
-        setRecommendedCvFile(file);
+    const processFile = async (file: File) => {
+      if (!active) return;
+      setRecommendedCvFile(file);
+      if (file.name.toLowerCase().endsWith('.docx')) {
+        const result = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() });
+        if (active) setRecommendedCvHtml(result.value);
+        return;
+      }
+      objectUrl = URL.createObjectURL(file);
+      if (active) setRecommendedCvUrl(objectUrl);
+    };
 
-        if (file.name.toLowerCase().endsWith('.docx')) {
-          const result = await mammoth.convertToHtml({ arrayBuffer: await file.arrayBuffer() });
-          if (active) setRecommendedCvHtml(result.value);
-          return;
-        }
+    const loadCv = async () => {
+      // Try IndexedDB first (fastest, works offline)
+      let file = await getUploadedCv(recommendedCv).catch(() => null);
 
-        objectUrl = URL.createObjectURL(file);
-        if (active) setRecommendedCvUrl(objectUrl);
-      })
-      .catch(() => {
-        if (active) {
-          setRecommendedCvUrl(null);
-          setRecommendedCvHtml(null);
+      // Fall back to backend (Firebase Storage) when not cached locally
+      if (!file) {
+        try {
+          const listResponse = await apiFetch('/api/cvs');
+          if (listResponse.ok) {
+            const { cvs } = await listResponse.json() as { cvs: { id: string; name: string }[] };
+            const match = cvs.find((cv) => cv.name === recommendedCv);
+            if (match) {
+              const contentResponse = await apiFetch(`/api/cvs/${match.id}/content`);
+              if (contentResponse.ok) {
+                const blob = await contentResponse.blob();
+                file = new File([blob], recommendedCv, { type: blob.type });
+              }
+            }
+          }
+        } catch {
+          // backend unavailable — file stays null
         }
-      });
+      }
+
+      if (!active || !file) return;
+      await processFile(file);
+    };
+
+    void loadCv().catch(() => {
+      if (active) {
+        setRecommendedCvUrl(null);
+        setRecommendedCvHtml(null);
+      }
+    });
 
     return () => {
       active = false;
@@ -396,6 +422,16 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
             <p className="whitespace-pre-wrap leading-7 text-gray-700">{job['Match Reasons'] || 'No match explanation was provided.'}</p>
           </section>
 
+          {job['Missing Requirements'] && job['Missing Requirements'] !== 'None identified' && (
+            <section className="rounded-xl border border-amber-100 bg-amber-50 p-6">
+              <div className="mb-3 flex items-center gap-2">
+                <FileText className="h-5 w-5 text-amber-600" />
+                <h2 className="text-xl font-semibold text-gray-900">Missing requirements</h2>
+              </div>
+              <p className="whitespace-pre-wrap leading-7 text-gray-700">{job['Missing Requirements']}</p>
+            </section>
+          )}
+
           <section className="rounded-xl border border-indigo-100 bg-indigo-50 p-6">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -443,7 +479,11 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                 <p className="mb-3 text-sm text-gray-500">{job['Recommended CV'] || 'Not specified'}</p>
                 {recommendedCvHtml ? (
                   <div className="max-h-[65vh] overflow-y-auto text-sm text-gray-800 [&_h1]:mb-4 [&_h1]:text-2xl [&_h2]:mb-3 [&_h2]:mt-5 [&_li]:ml-5 [&_li]:list-disc [&_p]:mb-3" dangerouslySetInnerHTML={{ __html: recommendedCvHtml }} />
-                ) : <p className="text-sm text-gray-500">Preview is not available for this file type.</p>}
+                ) : recommendedCvUrl ? (
+                  <iframe src={recommendedCvUrl} title="Recommended CV" className="h-[65vh] w-full rounded border border-gray-200" />
+                ) : (
+                  <p className="text-sm text-gray-500">{recommendedCvFile ? 'Preview is not available for this file type.' : 'CV not found in storage. Re-upload it from the home page to enable preview and tailoring.'}</p>
+                )}
               </div>
               <div className="rounded-lg border border-indigo-200 bg-white p-5">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

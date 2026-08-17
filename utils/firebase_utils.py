@@ -234,10 +234,20 @@ def fetch_prompt_preferences(user_id: str, limit: int = 12) -> List[Dict[str, An
 
 def fetch_role_preferences(user_id: str) -> Dict[str, Any]:
     document = _get_database().collection("users").document(user_id).collection("preferences").document("roles").get()
-    return document.to_dict() or {"target_roles": [], "excluded_roles": []}
+    data = document.to_dict() or {}
+    return {
+        "target_roles": data.get("target_roles", []),
+        "excluded_roles": data.get("excluded_roles", []),
+        "target_location": data.get("target_location", ""),
+    }
 
 
-def save_role_preferences(user_id: str, target_roles: List[str], excluded_roles: List[str]) -> Dict[str, Any]:
-    record = {"target_roles": target_roles, "excluded_roles": excluded_roles, "updated_at": datetime.now(timezone.utc).isoformat()}
+def save_role_preferences(user_id: str, target_roles: List[str], excluded_roles: List[str], target_location: str = "") -> Dict[str, Any]:
+    record = {
+        "target_roles": target_roles,
+        "excluded_roles": excluded_roles,
+        "target_location": target_location.strip(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
     _get_database().collection("users").document(user_id).collection("preferences").document("roles").set(record)
     return record

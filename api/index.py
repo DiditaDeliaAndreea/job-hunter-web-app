@@ -114,49 +114,11 @@ app.add_middleware(
 # TARGET AND EXCLUDED ROLES CONFIGURATION
 # ============================================================================
 
-TARGET_ROLES = [
-    "Technical Solutions Consultant", "Technical Support Engineer", "Technical Support Specialist",
-    "Product Support Engineer", "Application Support Engineer", "Application Support Specialist",
-    "Solutions Engineer", "Solutions Consultant", "Technical Consultant", "Technical Systems Specialist",
-    "Systems Support Engineer", "Customer Support Engineer", "Customer Solutions Engineer",
-    "Product Support Specialist", "AI Support Specialist", "AI Support Engineer", "AI Operations Specialist",
-    "AI Operations Analyst", "AI Quality Analyst", "AI Quality Assurance Engineer", "AI/ML Quality Analyst",
-    "Generative AI Support Specialist", "Technical Operations Specialist", "Technical Operations Analyst",
-    "Product Operations Specialist", "Product Operations Analyst", "Support Operations Specialist",
-    "Support Operations Analyst", "Triage Operations Specialist", "Incident Management Analyst",
-    "Escalation Engineer", "Technical Escalations Specialist", "QA Engineer", "Software QA Engineer",
-    "Software Test Engineer", "QA Analyst", "Senior QA Analyst", "QA Automation Engineer",
-    "Test Automation Engineer", "Python QA Automation Engineer", "Quality Engineer — Software",
-    "Product Quality Engineer — Software", "QA/Test Lead", "Data Quality Analyst", "Data Analyst",
-    "Operations Data Analyst", "Business Data Analyst", "Reporting Analyst", "Process Improvement Analyst",
-    "Process Improvement Specialist", "Business Process Analyst", "Technical Business Analyst",
-    "Systems Analyst", "Operations Analyst", "Technical Program Coordinator", "Technical Project Coordinator",
-    "Customer Success Engineer", "Technical Customer Success Specialist", "Implementation Consultant",
-    "Implementation Specialist"
-]
+TARGET_ROLES = []
 
-EXCLUDED_ROLES = [
-    "Senior Software Engineer", "Backend Software Engineer", "Frontend Software Engineer",
-    "Full-Stack Software Engineer", "Mobile Developer", "iOS Developer", "Android Developer",
-    "DevOps Engineer", "Site Reliability Engineer (SRE)", "Cloud Infrastructure Engineer",
-    "Platform Engineer", "Network Engineer", "Systems Administrator", "Cybersecurity Engineer",
-    "Security Operations / SOC Analyst", "Penetration Tester", "Data Engineer",
-    "Machine Learning Engineer", "AI/ML Engineer", "Data Scientist", "Research Scientist",
-    "ML Research Engineer", "Database Administrator", "Solutions Architect", "Cloud Architect",
-    "Enterprise Architect", "Senior Technical Architect", "Embedded Software Engineer",
-    "Firmware Engineer", "Hardware Engineer", "Electronics Engineer", "Mechanical Engineer",
-    "Manufacturing Quality Engineer", "Manufacturing QA / Quality Control Specialist",
-    "Validation Engineer — Pharmaceutical/Medical Devices", "GMP Quality Specialist",
-    "ISO Quality Manager", "Regulatory Affairs Specialist", "Clinical Quality Specialist",
-    "Laboratory QA Analyst", "Construction QA/QC Engineer", "Civil Engineer", "Electrical Engineer",
-    "Product Designer / UX Designer", "UI Designer", "Graphic Designer", "UX Researcher",
-    "Product Manager", "Senior Program Manager", "Engineering Manager", "Software Development Manager",
-    "Director of Engineering", "Head of QA / QA Director", "Enterprise Account Executive",
-    "Sales Development Representative", "Technical Sales", "Financial Analyst", "Accountant",
-    "Finance Manager", "HR Specialist", "Recruiter", "QA Lead"
-]
+EXCLUDED_ROLES = []
 
-TARGET_LOCATION = "Dublin, Ireland"
+TARGET_LOCATION = ""
 ACTIVE_SEARCHES: Dict[str, Dict[str, Any]] = {}
 CV_PROFILE_CACHE: Dict[str, str] = {}
 CV_ANALYSIS_CONCURRENCY = 2
@@ -170,6 +132,7 @@ JOB_FIELDS = [
     "Salary",
     "Fit Score (%)",
     "Match Reasons",
+    "Missing Requirements",
     "Job Description",
     "Recommended CV",
     "CV Tailoring Recommendation",
@@ -638,7 +601,8 @@ async def run_search_pipeline(
     reuse_cv_analysis: bool,
     user_id: str,
 ) -> None:
-    """Run the CV analysis + job search flow and save completion state for status polling."""
+    prefs = firebase_utils.fetch_role_preferences(user_id)
+    saved_location = prefs.get("target_location", "")
     try:
         total_files = len(files)
         analysis_semaphore = asyncio.Semaphore(CV_ANALYSIS_CONCURRENCY)
@@ -702,6 +666,7 @@ async def run_search_pipeline(
             excluded_roles=excluded_roles,
             cv_names=[filename for filename, _ in files],
             user_id=user_id,
+            target_location=saved_location,
         )
 
         if not matched_jobs:
@@ -913,19 +878,23 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     """
     logger.info("🤖 Agent 1 (CV Analyzer) starting - analyzing candidate profile...")
     
+    location_context = f"in {TARGET_LOCATION}" if TARGET_LOCATION else "in their target market"
     instructions = f"""
-    You are an expert technical recruiter matching candidates for roles in {TARGET_LOCATION}.
-    
+    You are an expert technical recruiter matching candidates for roles {location_context}.
+
     Analyze the provided resume and synthesize a detailed candidate profile:
     1. Core technical skills & primary tech stack
     2. Seniority level & total years of experience
     3. Key strengths and specializations (e.g., QA testing, AI operations, triage)
     4. Target role keywords that align with the candidate
-    
+    5. Candidate's current or target work location — extract this from the CV address, city, or
+       any stated relocation/remote preference. State it explicitly as "Location: <city, country>"
+       on its own line so it can be used for job search targeting.
+
     Be specific and detailed to help with job matching accuracy.
     """
-    
-    prompt = f"Analyze this CV and create a detailed candidate profile for {TARGET_LOCATION} job matching:\n\n{cv_text}"
+
+    prompt = f"Analyze this CV and create a detailed candidate profile for job matching:\n\n{cv_text}"
     
     response = await call_gemini_with_retry(
         instructions,
@@ -1129,14 +1098,16 @@ async def run_incremental_job_finder(
     excluded_roles: List[str] | None = None,
     cv_names: List[str] | None = None,
     user_id: str | None = None,
+    target_location: str = "",
 ) -> List[Dict[str, Any]]:
     """
     AGENT 2: Searches for jobs in batches using Google Search and matches to candidate.
-    
+
     Args:
         cv_summary: Candidate profile from Agent 1
         search_id: Optional active search ID for live progress updates
-        
+        target_location: User-configured location; falls back to CV-inferred location when empty.
+
     Returns:
         List of matched job opportunities
     """
@@ -1198,15 +1169,16 @@ async def run_incremental_job_finder(
                 progress_pct,
             )
         
+        location_str = target_location.strip() or TARGET_LOCATION or "the location stated in the candidate's profile above"
         instructions = f"""
         You are an automated career matching agent using Google Search.
-        
-        Search for ACTIVE open job listings specifically in **{TARGET_LOCATION}** matching:
+
+        Search for ACTIVE open job listings specifically in **{location_str}** matching:
         [{batch_roles_str}]
-        
+
         STRICT EXCLUSION LIST (DO NOT INCLUDE ANY OF THESE ROLES):
         [{excluded_str}]
-        
+
         CRITICAL REQUIREMENTS:
         1. Only return jobs posted within the last 7 days
         2. Filter out any jobs older than 1 week
@@ -1253,13 +1225,48 @@ async def run_incremental_job_finder(
           13. Use this applied-job history as a strong preference signal. Prioritize new jobs that
               resemble the user's repeatedly applied role families and title patterns, but do not
               assume that every previously applied role is suitable. The CV, target roles, exclusion
-              list, Dublin location, freshness, exact listing identity, and expiry checks remain
-              mandatory.
+              list, location, freshness, exact listing identity, and expiry checks remain mandatory.
           14. Applied-job preference profile:
 {applied_job_preferences}
           15. Existing saved-job ledger for duplicate checking:
 {existing_jobs_summary}
-        
+
+        FIT SCORE RUBRIC — follow this exactly when setting "Fit Score (%)":
+        Start at 100 and apply the following deductions before assigning the score.
+
+        HARD REQUIREMENT PENALTIES (apply each that is unmet):
+        - Named proprietary tool/platform the candidate has no experience with (e.g. SAP, Salesforce,
+          Hogan, Unibanks, Workday, ServiceNow, specific CMS): -20 per unmet tool, max -40
+        - Required years of experience the candidate clearly does not meet (e.g. "5+ years" when
+          candidate has 1-2 years in that discipline): -20 per unmet requirement, max -30
+        - Mandatory degree or certification not present on the CV (e.g. "postgraduate required",
+          "CPA required", "CISSP required"): -25
+        - Required domain-specific background the candidate has none of (e.g. "pharma GxP experience
+          required", "financial services background required"): -20
+        - Automation or testing framework experience explicitly required but candidate's experience
+          is clearly in a different form of automation (e.g. role requires Playwright/Selenium/
+          Cypress test automation; candidate has workflow/process automation only): -20
+
+        OVERMATCHING GUARD — keyword presence alone is not a match:
+        - Do not award credit for a skill or tool if the CV only mentions it in passing or lists it
+          without demonstrating professional depth. Only count skills with clear evidence of sustained
+          use (multiple roles, quantified outcomes, or project ownership).
+        - Do not treat "QA" as equivalent to "test automation". Do not treat "Python scripting" as
+          equivalent to "software engineering". Do not treat "data analysis" as equivalent to
+          "BI/data analytics tooling experience". Match the depth, not just the keyword.
+
+        SCORING FLOOR:
+        - Any job with 2 or more unmet hard requirements must score 65% or below.
+        - Any job with a named proprietary tool requirement the candidate clearly lacks must score
+          70% or below, regardless of other matches.
+
+        For "Match Reasons": write 2-4 sentences explaining the strongest genuine overlaps between
+        the candidate profile and this specific role. Be honest — do not pad with generic claims.
+
+        For "Missing Requirements": list every hard requirement from the job description that the
+        candidate does not clearly meet. Use a bullet list. Write "None identified" if there are
+        no meaningful gaps. This field must reflect the actual job description, not generic advice.
+
         Output ONLY a valid JSON array (no markdown, no ```json wrapper):
         [
           {{
@@ -1267,30 +1274,32 @@ async def run_incremental_job_finder(
             "Company": "Company Name",
             "Location": "Location",
             "Fit Score (%)": "e.g., 85%",
+            "Match Reasons": "2-4 sentences on genuine overlaps",
+            "Missing Requirements": "Bullet list of unmet hard requirements, or None identified",
             "Job Description": "Complete job description copied verbatim from the original listing",
             "Recommended CV": "Exact uploaded CV filename",
             "CV Tailoring Recommendation": "Specific changes or emphasis for this job",
             "Status": "Active",
-                        "URL": "https://direct-job-listing-url",
-                        "Listing Source": "Official company website or job board name",
-                        "Official Listing Verified": "Yes or No",
-                        "Official Listing URL": "https://official-exact-job-listing or Not specified",
-                        "Original Listing URL": "https://exact-source-job-listing",
-                        "Posted Date": "YYYY-MM-DD or Not specified",
-                        "Working Type": "Remote, Hybrid, On-site, or Not specified"
-                        ,"Salary": "Salary or compensation exactly as listed, or Not specified"
+            "URL": "https://direct-job-listing-url",
+            "Listing Source": "Official company website or job board name",
+            "Official Listing Verified": "Yes or No",
+            "Official Listing URL": "https://official-exact-job-listing or Not specified",
+            "Original Listing URL": "https://exact-source-job-listing",
+            "Posted Date": "YYYY-MM-DD or Not specified",
+            "Working Type": "Remote, Hybrid, On-site, or Not specified",
+            "Salary": "Salary or compensation exactly as listed, or Not specified"
           }}
         ]
         """
-        
+
         prompt = (
-            f"Search Google for job listings in {TARGET_LOCATION} "
+            f"Search Google for job listings in {location_str} "
             f"for these roles: {batch_roles_str}. "
             f"Only include jobs posted in the last 7 days. "
             f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
             f"Do not return any title/company pair already present in the complete saved-job ledger "
             f"included in your instructions. "
-            f"Match them against this candidate profile:\n{cv_summary}"
+            f"Match them against this candidate profile and score strictly using the rubric in your instructions:\n{cv_summary}"
         )
         
         try:
@@ -1695,10 +1704,11 @@ async def get_role_preferences(current_user: Dict[str, Any] = Depends(get_curren
 async def put_role_preferences(
     target_roles: str = Form(""),
     excluded_roles: str = Form(""),
+    target_location: str = Form(""),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     split_roles = lambda value: list(dict.fromkeys(role.strip() for role in re.split(r"[,\n]", value) if role.strip()))
-    record = firebase_utils.save_role_preferences(current_user["uid"], split_roles(target_roles), split_roles(excluded_roles))
+    record = firebase_utils.save_role_preferences(current_user["uid"], split_roles(target_roles), split_roles(excluded_roles), target_location)
     return JSONResponse(record)
 
 
