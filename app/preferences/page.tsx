@@ -15,6 +15,7 @@ export default function PreferencesPage() {
   const [targetInput, setTargetInput] = useState('')
   const [excludedInput, setExcludedInput] = useState('')
   const [targetLocation, setTargetLocation] = useState('')
+  const [maxPostingAgeDays, setMaxPostingAgeDays] = useState(7)
   const [message, setMessage] = useState('')
 
   const parseRoles = (value: unknown): string[] => {
@@ -47,6 +48,7 @@ export default function PreferencesPage() {
         const remoteTargetRoles = Array.isArray(preferences.target_roles) ? preferences.target_roles : parseRoles(preferences.targetRoles)
         const remoteExcludedRoles = Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles : parseRoles(preferences.excludedRoles)
         const remoteLocation = typeof preferences.target_location === 'string' ? preferences.target_location : ''
+        const remoteMaxAge = typeof preferences.max_posting_age_days === 'number' ? preferences.max_posting_age_days : 7
         const localPreferences = loadLocalPreferences()
         const target = remoteTargetRoles.length ? remoteTargetRoles : localPreferences?.targetRoles || []
         const excluded = remoteExcludedRoles.length ? remoteExcludedRoles : localPreferences?.excludedRoles || []
@@ -54,6 +56,7 @@ export default function PreferencesPage() {
         setTargetRoles(target)
         setExcludedRoles(excluded)
         setTargetLocation(location)
+        setMaxPostingAgeDays(remoteMaxAge)
         writeCachedPreferences({ targetRoles: target, excludedRoles: excluded })
         if ((!remoteTargetRoles.length && !remoteExcludedRoles.length) && (target.length || excluded.length)) {
           const formData = new FormData()
@@ -90,6 +93,7 @@ export default function PreferencesPage() {
     formData.append('target_roles', nextTargetRoles.join('\n'))
     formData.append('excluded_roles', nextExcludedRoles.join('\n'))
     formData.append('target_location', targetLocation.trim())
+    formData.append('max_posting_age_days', String(maxPostingAgeDays))
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(async (response) => {
       if (!response.ok) throw new Error('Could not save preferences.')
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ targetRoles: nextTargetRoles.join('\n'), excludedRoles: nextExcludedRoles.join('\n'), targetLocation: targetLocation.trim() }))
@@ -104,6 +108,7 @@ export default function PreferencesPage() {
     setTargetInput('')
     setExcludedInput('')
     setTargetLocation('')
+    setMaxPostingAgeDays(7)
     const formData = new FormData()
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(() => {
       window.localStorage.removeItem(STORAGE_KEY)
@@ -168,6 +173,23 @@ export default function PreferencesPage() {
               placeholder="e.g. Dublin, Ireland or Remote"
               className="mt-3 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
             />
+          </label>
+        </div>
+
+        <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-7 shadow-sm md:p-8">
+          <label className="block text-sm font-semibold text-slate-800">
+            <span className="block text-base">Maximum job posting age</span>
+            <span className="mt-1 block font-normal text-slate-500">Only return jobs posted within this many days. A shorter window gives fresher results; a longer window gives more results.</span>
+            <select
+              value={maxPostingAgeDays}
+              onChange={(event) => setMaxPostingAgeDays(Number(event.target.value))}
+              className="mt-3 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            >
+              <option value={3}>3 days — freshest only</option>
+              <option value={7}>7 days (default)</option>
+              <option value={14}>14 days</option>
+              <option value={30}>30 days</option>
+            </select>
           </label>
         </div>
 

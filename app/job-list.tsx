@@ -42,6 +42,8 @@ export default function JobList({ applied }: { applied: boolean }) {
   const [salaryFilter, setSalaryFilter] = useState('All')
   const [postedDateFilter, setPostedDateFilter] = useState('All')
   const [jobSort, setJobSort] = useState('fit-score-desc')
+  const [hideExpired, setHideExpired] = useState(true)
+  const [dismissingExpired, setDismissingExpired] = useState(false)
 
   const loadJobs = async () => {
     if (jobs.length === 0) setLoading(true)
@@ -96,6 +98,21 @@ export default function JobList({ applied }: { applied: boolean }) {
     }
   }
 
+  const dismissAllExpired = async () => {
+    if (!window.confirm('Remove all expired jobs from your list? They will be kept for deduplication but hidden.')) return
+    setDismissingExpired(true)
+    try {
+      const response = await apiFetch('/api/jobs/dismiss-expired', { method: 'POST' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data?.detail || 'Could not remove expired jobs.')
+      await loadJobs()
+    } catch (dismissError) {
+      setError(dismissError instanceof Error ? dismissError.message : 'Could not remove expired jobs.')
+    } finally {
+      setDismissingExpired(false)
+    }
+  }
+
   const dismissJob = async (job: Job) => {
     const jobTitle = job['Job Title'] || ''
     const company = job.Company || ''
@@ -123,7 +140,9 @@ export default function JobList({ applied }: { applied: boolean }) {
       const salary = String(job.Salary || '').trim().toLowerCase()
       const hasSalary = Boolean(salary && salary !== 'not specified')
       const ageDays = getPostedAgeDays(job['Posted Date'])
+      const isExpired = (job['Verification Status'] || '').toLowerCase() === 'expired'
       return (
+        (!hideExpired || !isExpired) &&
         (!jobFilter.trim() || searchableText.includes(jobFilter.trim().toLowerCase())) &&
         (workingTypeFilter === 'All' || (job['Working Type'] || 'Not specified') === workingTypeFilter) &&
         (minimumScore === '0' || Number.isNaN(score) || score >= Number(minimumScore)) &&
@@ -159,6 +178,7 @@ export default function JobList({ applied }: { applied: boolean }) {
     setSalaryFilter('All')
     setPostedDateFilter('All')
     setJobSort('fit-score-desc')
+    setHideExpired(true)
   }
 
   return (
@@ -199,7 +219,19 @@ export default function JobList({ applied }: { applied: boolean }) {
                   <h2 className="font-semibold">Refine {applied ? 'applied' : 'open'} jobs</h2>
                   <p className="mt-1 text-xs text-slate-500">Showing {displayedJobs.length} of {jobs.length} jobs</p>
                 </div>
-                <button type="button" onClick={clearJobFilters} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Clear filters</button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!applied && (
+                    <button type="button" onClick={() => setHideExpired((v) => !v)} className={`rounded-md border px-3 py-1.5 text-xs font-medium ${hideExpired ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100' : 'border-slate-300 text-slate-700 hover:bg-slate-50'}`}>
+                      {hideExpired ? 'Showing active only' : 'Showing all (incl. expired)'}
+                    </button>
+                  )}
+                  {!applied && (
+                    <button type="button" onClick={() => void dismissAllExpired()} disabled={dismissingExpired} className="rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">
+                      {dismissingExpired ? 'Removing...' : 'Remove all expired'}
+                    </button>
+                  )}
+                  <button type="button" onClick={clearJobFilters} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Clear filters</button>
+                </div>
               </div>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <label className="text-sm text-slate-700 md:col-span-2 lg:col-span-2">

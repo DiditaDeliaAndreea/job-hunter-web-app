@@ -28,7 +28,7 @@ from openpyxl import Workbook
 # Import CSV utilities
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.csv_utils import append_jobs_to_csv, dismiss_job_in_csv, import_jobs_from_csv, import_local_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
+from utils.csv_utils import append_jobs_to_csv, dismiss_expired_jobs_in_csv, dismiss_job_in_csv, import_jobs_from_csv, import_local_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
 from utils import firebase_utils
 
 # Configure logging
@@ -327,6 +327,15 @@ def _check_url_sync(url: str, job_title: str, company: str, allow_client_rendere
         "page not found",
         "no jobs found",
         "job does not exist",
+        "no longer accepting applications",
+        "this job is no longer accepting applications",
+        "applications are closed",
+        "applications closed",
+        "position is no longer open",
+        "this role is no longer available",
+        "job is no longer available",
+        "this listing is no longer active",
+        "application deadline has passed",
     )
     url_text = unescape(url.lower().replace("-", " ").replace("_", " "))
     url_title_matches = sum(token in url_text for token in title_tokens)
@@ -351,13 +360,19 @@ async def validate_listing_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
     official_url = job.get("Official Listing URL", "Not specified")
     official_verified = str(job.get("Official Listing Verified", "")).lower() == "yes"
 
-    source_reachable, official_reachable = await asyncio.gather(
+    source_expired, source_reachable, official_reachable = await asyncio.gather(
+        asyncio.to_thread(_url_is_expired_sync, source_url)
+        if source_url.startswith("http") else asyncio.sleep(0, result=False),
         asyncio.to_thread(_check_url_sync, source_url, job_title, company)
         if source_url.startswith("http") else asyncio.sleep(0, result=False),
         asyncio.to_thread(_check_url_sync, official_url, job_title, company, True)
         if official_verified and official_url != "Not specified"
         else asyncio.sleep(0, result=False),
     )
+
+    if source_expired:
+        logger.info(f"Dropping expired listing: {job_title} at {company} ({source_url})")
+        return None
 
     if official_reachable:
         job["URL"] = official_url
@@ -603,6 +618,7 @@ async def run_search_pipeline(
 ) -> None:
     prefs = firebase_utils.fetch_role_preferences(user_id)
     saved_location = prefs.get("target_location", "")
+    max_posting_age_days = int(prefs.get("max_posting_age_days", 7))
     try:
         total_files = len(files)
         analysis_semaphore = asyncio.Semaphore(CV_ANALYSIS_CONCURRENCY)
@@ -667,6 +683,7 @@ async def run_search_pipeline(
             cv_names=[filename for filename, _ in files],
             user_id=user_id,
             target_location=saved_location,
+            max_posting_age_days=max_posting_age_days,
         )
 
         if not matched_jobs:
@@ -1155,6 +1172,7 @@ async def run_incremental_job_finder(
     cv_names: List[str] | None = None,
     user_id: str | None = None,
     target_location: str = "",
+    max_posting_age_days: int = 7,
 ) -> List[Dict[str, Any]]:
     """
     AGENT 2: Searches for jobs in batches using Google Search and matches to candidate.
@@ -1186,9 +1204,17 @@ async def run_incremental_job_finder(
         )
         for job in existing_jobs
     }
+    # Only show active non-dismissed jobs in the Gemini ledger — expired and dismissed jobs
+    # remain in saved_job_keys for code-level dedup but don't clutter the prompt or
+    # prevent Gemini from suggesting fresh postings for roles that previously expired.
+    active_jobs = [
+        job for job in existing_jobs
+        if job.get("User Dismissed", "").strip().lower() != "yes"
+        and job.get("Verification Status", "").strip().lower() != "expired"
+    ]
     existing_jobs_summary = "\n".join(
         f"- {job.get('Job Title', 'Not specified')} — {job.get('Company', 'Not specified')}"
-        for job in existing_jobs
+        for job in active_jobs
     ) or "None"
 
     def keep_new_jobs(candidate_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1236,8 +1262,8 @@ async def run_incremental_job_finder(
         [{excluded_str}]
 
         CRITICAL REQUIREMENTS:
-        1. Only return jobs posted within the last 7 days
-        2. Filter out any jobs older than 1 week
+        1. Only return jobs posted within the last {max_posting_age_days} days
+        2. Filter out any jobs older than {max_posting_age_days} days
           2a. Before returning any result, compare its normalized job title and company against the
               complete saved-job ledger below. Do not return duplicates, even if the new URL or source
               is different. Review the entire ledger, not only the current search batch.
@@ -1351,7 +1377,7 @@ async def run_incremental_job_finder(
         prompt = (
             f"Search Google for job listings in {location_str} "
             f"for these roles: {batch_roles_str}. "
-            f"Only include jobs posted in the last 7 days. "
+            f"Only include jobs posted in the last {max_posting_age_days} days. "
             f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
             f"Do not return any title/company pair already present in the complete saved-job ledger "
             f"included in your instructions. "
@@ -1761,10 +1787,11 @@ async def put_role_preferences(
     target_roles: str = Form(""),
     excluded_roles: str = Form(""),
     target_location: str = Form(""),
+    max_posting_age_days: int = Form(7),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     split_roles = lambda value: list(dict.fromkeys(role.strip() for role in re.split(r"[,\n]", value) if role.strip()))
-    record = firebase_utils.save_role_preferences(current_user["uid"], split_roles(target_roles), split_roles(excluded_roles), target_location)
+    record = firebase_utils.save_role_preferences(current_user["uid"], split_roles(target_roles), split_roles(excluded_roles), target_location, max_posting_age_days)
     return JSONResponse(record)
 
 
@@ -1789,6 +1816,15 @@ async def dismiss_job(
     if not dismissed:
         raise HTTPException(status_code=404, detail="Job not found")
     return JSONResponse({"dismissed": True, "message": "Job dismissed and retained in CSV"})
+
+
+@app.post("/api/jobs/dismiss-expired")
+async def dismiss_all_expired_jobs(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Dismiss all jobs marked as Expired, keeping them for deduplication."""
+    count = dismiss_expired_jobs_in_csv("job_matches.csv", current_user["uid"])
+    return JSONResponse({"dismissed": count})
 
 
 @app.post("/api/jobs/update-url")

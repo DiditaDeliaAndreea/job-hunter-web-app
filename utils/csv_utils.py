@@ -182,6 +182,22 @@ def append_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.
         raise
 
 
+def dismiss_expired_jobs_in_csv(filename: str = "job_matches.csv", user_id: str | None = None) -> int:
+    """Mark all verified-expired jobs as dismissed. Returns the count dismissed."""
+    jobs = import_jobs_from_csv(filename, user_id)
+    count = 0
+    for job in jobs:
+        if (
+            job.get("Verification Status", "").strip().lower() == "expired"
+            and job.get("User Dismissed", "").strip().lower() != "yes"
+        ):
+            job["User Dismissed"] = "Yes"
+            count += 1
+    if count:
+        export_jobs_to_csv(jobs, filename, user_id)
+    return count
+
+
 def dismiss_job_in_csv(job_title: str, company: str, filename: str = "job_matches.csv", user_id: str | None = None) -> bool:
     """Mark a job as dismissed without deleting it, preventing future re-addition."""
     jobs = import_jobs_from_csv(filename, user_id)
