@@ -418,21 +418,148 @@ def parse_role_input(value: str | None, fallback: List[str]) -> List[str]:
     return list(dict.fromkeys(roles)) or fallback.copy()
 
 
+def _normalize_search_value(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip())
+
+
+ROLE_VARIANT_MAP = {
+    "qa": ["QA Engineer", "Quality Assurance Engineer", "Software QA Engineer", "Software Test Engineer", "QA Analyst", "QA Automation Engineer", "Test Automation Engineer", "Quality Engineer"],
+    "quality assurance": ["QA Engineer", "Quality Assurance Engineer", "Software QA Engineer", "QA Analyst", "Quality Engineer", "Software Test Engineer"],
+    "support engineer": ["Technical Support Engineer", "Support Engineer", "Customer Support Engineer", "Application Support Engineer", "Technical Support Specialist", "Product Support Engineer", "Customer Experience Engineer"],
+    "technical support": ["Technical Support Engineer", "Technical Support Specialist", "Application Support Engineer", "Customer Support Engineer", "Product Support Engineer"],
+    "incident": ["Incident Response Analyst", "Incident Management Analyst", "Technical Support Engineer", "Operations Analyst", "Incident Analyst"],
+    "operations analyst": ["Operations Analyst", "Operations Data Analyst", "Support Operations Analyst", "Technical Operations Analyst", "Business Operations Analyst"],
+    "analyst": ["Analyst", "Operations Analyst", "Data Analyst", "Business Analyst", "Systems Analyst", "Technical Analyst", "Reporting Analyst", "Quality Analyst"],
+    "customer success": ["Customer Success Engineer", "Technical Customer Success Specialist", "Implementation Consultant", "Implementation Specialist", "Customer Success Specialist"],
+    "implementation": ["Implementation Consultant", "Implementation Specialist", "Technical Consultant", "Solutions Consultant"],
+    "consultant": ["Technical Consultant", "Solutions Consultant", "Implementation Consultant", "Technical Solutions Consultant", "Customer Solutions Engineer"],
+    "systems analyst": ["Systems Analyst", "Business Systems Analyst", "Technical Business Analyst", "Operations Analyst", "Product Operations Analyst"],
+    "quality analyst": ["QA Analyst", "Quality Analyst", "Data Quality Analyst", "AI Quality Analyst", "Quality Assurance Analyst"],
+    "test engineer": ["Software Test Engineer", "Test Automation Engineer", "QA Engineer", "Quality Assurance Engineer", "Software QA Engineer"],
+    "ai support": ["AI Support Specialist", "AI Support Engineer", "AI Operations Analyst", "AI Operations Specialist", "Generative AI Support Specialist"],
+    "product support": ["Product Support Engineer", "Product Support Specialist", "Customer Support Engineer", "Technical Support Engineer"],
+}
+
+
+def _expand_role_variants(role: str) -> List[str]:
+    cleaned = _normalize_search_value(role)
+    if not cleaned:
+        return []
+    variants = {cleaned}
+    lower = cleaned.casefold()
+    for key, values in ROLE_VARIANT_MAP.items():
+        if key in lower or lower in key:
+            variants.update(value for value in values if value.strip())
+    replacements = [
+        ("quality assurance engineer", "QA Engineer"),
+        ("quality engineer", "QA Engineer"),
+        ("software quality assurance engineer", "Software QA Engineer"),
+        ("technical support specialist", "Technical Support Engineer"),
+        ("support specialist", "Technical Support Engineer"),
+        ("incident response specialist", "Incident Response Analyst"),
+        ("incident management specialist", "Incident Management Analyst"),
+    ]
+    for source, replacement in replacements:
+        if lower == source:
+            variants.add(replacement)
+    return [value for value in dict.fromkeys(variants) if value.strip()]
+
+
 def extract_cv_role_suggestions(cv_summary: str) -> List[str]:
     """Read structured role suggestions from the CV analyzer response."""
+    text = str(cv_summary or "").strip()
     try:
-        parsed = json.loads(cv_summary.strip())
+        parsed = json.loads(text)
     except (TypeError, json.JSONDecodeError):
-        return []
+        parsed = {}
 
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("matching_roles"), list):
-        return []
+    if isinstance(parsed, dict):
+        role_candidates = parsed.get("matching_roles") or parsed.get("target_roles") or parsed.get("role_matches") or []
+        if isinstance(role_candidates, list):
+            roles = [
+                _normalize_search_value(str(role))
+                for role in role_candidates
+                if str(role).strip()
+            ]
+            if roles:
+                return roles
 
-    return list(dict.fromkeys(
-        str(role).strip()
-        for role in parsed["matching_roles"]
-        if str(role).strip()
-    ))
+    matches = re.findall(r"(?:\b(?:QA|Quality Assurance|Technical Support|Customer Support|Application Support|Product Support|Systems Analyst|Operations Analyst|Incident Response|Incident Management|Customer Success|Implementation|Support|Software Quality|Test Automation|Quality Analyst|Data Analyst|Business Analyst)\b[^\n]{0,80})", text, flags=re.IGNORECASE)
+    roles = []
+    for match in matches:
+        cleaned = _normalize_search_value(match)
+        if cleaned and cleaned not in roles:
+            roles.append(cleaned)
+    return roles[:12]
+
+
+def extract_cv_languages(cv_summary: str) -> List[str]:
+    """Extract spoken-language signals from a CV summary or analyzer JSON."""
+    text = str(cv_summary or "").strip()
+    language_aliases = {
+        "english": "English",
+        "irish": "Irish",
+        "romanian": "Romanian",
+        "french": "French",
+        "spanish": "Spanish",
+        "german": "German",
+        "italian": "Italian",
+        "portuguese": "Portuguese",
+        "dutch": "Dutch",
+        "arabic": "Arabic",
+        "chinese": "Chinese",
+        "japanese": "Japanese",
+        "korean": "Korean",
+        "polish": "Polish",
+        "czech": "Czech",
+        "greek": "Greek",
+        "russian": "Russian",
+        "ukrainian": "Ukrainian",
+        "hungarian": "Hungarian",
+        "swedish": "Swedish",
+        "norwegian": "Norwegian",
+        "danish": "Danish",
+        "finnish": "Finnish",
+        "turkish": "Turkish",
+        "latvian": "Latvian",
+        "lithuanian": "Lithuanian",
+        "slovak": "Slovak",
+    }
+
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        parsed = {}
+
+    if isinstance(parsed, dict):
+        for key in ["languages", "language_skills", "spoken_languages", "spoken_language_skills", "linguistic_skills"]:
+            value = parsed.get(key)
+            if isinstance(value, list):
+                extracted = []
+                for item in value:
+                    if isinstance(item, str):
+                        extracted.extend(item.split(","))
+                if extracted:
+                    return [
+                        language_aliases.get(lang.strip().casefold(), lang.strip())
+                        for lang in extracted
+                        if lang.strip()
+                    ]
+            elif isinstance(value, str):
+                return [
+                    language_aliases.get(lang.strip().casefold(), lang.strip())
+                    for lang in re.split(r"[,;\n]", value)
+                    if lang.strip()
+                ]
+
+    extracted = []
+    for match in re.finditer(r"\b(?:English|Irish|Romanian|French|Spanish|German|Italian|Portuguese|Dutch|Arabic|Chinese|Japanese|Korean|Polish|Czech|Greek|Russian|Ukrainian|Hungarian|Swedish|Norwegian|Danish|Finnish|Turkish|Latvian|Lithuanian|Slovak)\b(?:\s+(?:speaker|fluent|native|proficient|language))?", text, flags=re.IGNORECASE):
+        candidate = match.group(0)
+        cleaned = re.sub(r"\s+(?:speaker|fluent|native|proficient|language)$", "", candidate, flags=re.IGNORECASE).strip()
+        normalized = language_aliases.get(cleaned.casefold(), cleaned.title())
+        if normalized and normalized not in extracted:
+            extracted.append(normalized)
+    return extracted
 
 
 def build_search_roles(
@@ -440,18 +567,23 @@ def build_search_roles(
     excluded_roles: List[str],
     cv_summaries: List[str],
 ) -> List[str]:
-    """Combine explicit and CV-inferred roles, then remove excluded roles."""
-    inferred_roles = [
-        role
-        for cv_summary in cv_summaries
-        for role in extract_cv_role_suggestions(cv_summary)
-    ]
+    """Combine explicit and CV-inferred roles, then remove excluded roles and include related role variants."""
+    inferred_roles = []
+    for cv_summary in cv_summaries:
+        inferred_roles.extend(extract_cv_role_suggestions(cv_summary))
+
+    expanded_roles: List[str] = []
+    for role in [*target_roles, *inferred_roles]:
+        expanded_roles.extend(_expand_role_variants(role))
     excluded = {role.casefold() for role in excluded_roles}
-    return list(dict.fromkeys(
+    filtered = [
         role
-        for role in [*target_roles, *inferred_roles]
-        if role.casefold() not in excluded
-    ))
+        for role in dict.fromkeys(expanded_roles)
+        if role and role.casefold() not in excluded
+    ]
+    if filtered:
+        return filtered
+    return [role for role in dict.fromkeys([*target_roles, *inferred_roles]) if role and role.casefold() not in excluded]
 
 
 def build_applied_job_preferences(jobs: List[Dict[str, Any]]) -> str:
@@ -673,12 +805,15 @@ async def run_search_pipeline(
             for filename, cv_summary in analyzed_cvs
         ]
 
+        expanded_target_roles = build_search_roles(target_roles, excluded_roles, cv_summaries)
+        if expanded_target_roles:
+            update_search_status(search_id, f"Expanded search to {len(expanded_target_roles)} related role signals based on the CV profile.", 55)
         combined_summary = "\n\n--- NEXT CV PROFILE ---\n\n".join(cv_summaries)
         update_search_status(search_id, "Searching live jobs in batches...", 55)
         matched_jobs = await run_incremental_job_finder(
             combined_summary,
             search_id=search_id,
-            target_roles=target_roles,
+            target_roles=expanded_target_roles,
             excluded_roles=excluded_roles,
             cv_names=[filename for filename, _ in files],
             user_id=user_id,
@@ -897,6 +1032,7 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     
     location_context = f"in {TARGET_LOCATION}" if TARGET_LOCATION else "in their target market"
     instructions = f"""
+<<<<<<< HEAD
     You are an expert technical recruiter matching candidates for roles {location_context}.
 
     Analyze the provided resume and synthesize a detailed candidate profile:
@@ -912,6 +1048,22 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     """
 
     prompt = f"Analyze this CV and create a detailed candidate profile for job matching:\n\n{cv_text}"
+=======
+    You are an expert technical recruiter matching candidates for roles in {TARGET_LOCATION}.
+
+    Analyze the provided resume and return strict JSON only.
+    Required keys:
+    - core_skills: array of technical skills and tools
+    - seniority: string summarizing level and years of experience if stated
+    - strengths: array of candidate specializations (e.g., QA testing, AI operations, triage)
+    - matching_roles: array of likely job titles or role families that fit the candidate
+    - languages: array of spoken or written languages explicitly mentioned in the CV (e.g., Romanian, English, Irish)
+
+    Use evidence from the CV. Keep the output valid JSON with no markdown wrapper.
+    """
+
+    prompt = f"Analyze this CV and create a detailed candidate profile for {TARGET_LOCATION} job matching:\n\n{cv_text}"
+>>>>>>> c83e656 (fix: broaden job search matching)
     
     response = await call_gemini_with_retry(
         instructions,
@@ -1251,138 +1403,149 @@ async def run_incremental_job_finder(
                 progress_pct,
             )
         
-        location_str = target_location.strip() or TARGET_LOCATION or "the location stated in the candidate's profile above"
-        instructions = f"""
-        You are an automated career matching agent using Google Search.
+location_str = target_location.strip() or TARGET_LOCATION or "the location stated in the candidate's profile above"
+language_signals = extract_cv_languages(cv_summary)
+language_hint = (
+    f" Language signals from the CV: {', '.join(language_signals)}. Include relevant bilingual language requirements when they align with the candidate profile."
+    if language_signals
+    else ""
+)
 
-        Search for ACTIVE open job listings specifically in **{location_str}** matching:
-        [{batch_roles_str}]
+instructions = f"""
+You are an automated career matching agent using Google Search.
 
-        STRICT EXCLUSION LIST (DO NOT INCLUDE ANY OF THESE ROLES):
-        [{excluded_str}]
+Search for ACTIVE open job listings specifically in **{location_str}** and across Irish hiring boards relevant to Dublin and Ireland, including IrishJobs, Jobs.ie, MCS Group, Sigmar Recruitment, Morgan McKinley, LinkedIn, Indeed, Greenhouse, Workday, and similar board sources.
 
-        CRITICAL REQUIREMENTS:
-        1. Only return jobs posted within the last {max_posting_age_days} days
-        2. Filter out any jobs older than {max_posting_age_days} days
-          2a. Before returning any result, compare its normalized job title and company against the
-              complete saved-job ledger below. Do not return duplicates, even if the new URL or source
-              is different. Review the entire ledger, not only the current search batch.
-          3. If the listing page says "No longer accepting applications", "applications are closed",
-              "position is no longer open", "role is no longer active", or any equivalent closure note,
-              treat it as Expired and do not save it as an active job. Ignore these listings entirely.
-        4. Match candidate skills from profile: {cv_summary[:300]}...
-          5. Return the exact direct URL of each job listing from the search result; never use N/A,
-              a company homepage, a search page, or a fabricated URL. If no direct listing URL is
-              available, include the job with "Not specified" and mark the URL status accordingly.
-          6. Extract the posting date when visible. Use "Not specified" only when the listing does
-              not show a date. Normalize working type to exactly Remote, Hybrid, On-site, or
-              Not specified.
-          6a. Extract the salary or compensation exactly as shown. Use "Not specified" when it is
-              not available; do not estimate or invent salary.
-          7. Select the best matching CV filename from this list and return it exactly:
-              [{", ".join(cv_names)}]
-          8. Provide a concrete recommendation for tailoring that selected CV to this job,
-              including which skills, experience, or keywords to emphasize.
-          9. Extract the complete job description from the original listing, preserving all
-              available sections, paragraphs, responsibilities, requirements, qualifications,
-              benefits, and other visible content. Do not summarize or shorten it. Do not invent
-              details. The description must contain at least 500 characters of source text. If the
-              full description cannot be retrieved, do not return that job.
-        10. Check sources in this strict order: first the exact LinkedIn posting, then the exact
-            job-board posting (Indeed, IrishJobs, Greenhouse, or another board), then the
-            employer's official careers listing. Inspect the LinkedIn page status before using
-            any other source. If LinkedIn says "No longer accepting applications", "applications
-            are closed", "position is no longer open", or similar, classify the role as Expired,
-            quote that wording in the verification notes, and do not return or save it as Active.
-            A job-board copy, official homepage, or older search snippet must never override a
-            LinkedIn closure message. Do not treat a company careers homepage, a generic
-            Greenhouse board, or a different job ID as verification. The official page must show
-            the exact job title and employer; otherwise mark it No.
-        11. Set Listing Source to Official company website or the job-board name. Set Official
-              Listing Verified to Yes only when the exact role is found on the official employer
-              site; otherwise set it to No and put Not specified in Official Listing URL.
-        12. Always return Original Listing URL as the exact direct URL where the job was found.
-              Return the official URL in URL when verified; otherwise return the original job-board
-              URL in URL.
-          13. Use this applied-job history as a strong preference signal. Prioritize new jobs that
-              resemble the user's repeatedly applied role families and title patterns, but do not
-              assume that every previously applied role is suitable. The CV, target roles, exclusion
-              list, location, freshness, exact listing identity, and expiry checks remain mandatory.
-          14. Applied-job preference profile:
+Search roles and close variants:
+[{batch_roles_str}]
+
+STRICT EXCLUSION LIST (DO NOT INCLUDE ANY OF THESE ROLES):
+[{excluded_str}]
+
+CRITICAL REQUIREMENTS:
+1. Only return jobs posted within the last {max_posting_age_days} days.
+2. Filter out any jobs older than {max_posting_age_days} days.
+2a. Before returning any result, compare its normalized job title and company against the
+    complete saved-job ledger below. Do not return duplicates, even if the new URL or source
+    is different. Review the entire ledger, not only the current search batch.
+3. If the listing page says "No longer accepting applications", "applications are closed",
+    "position is no longer open", "role is no longer active", or any equivalent closure note,
+    treat it as Expired and do not save it as an active job. Ignore these listings entirely.
+4. Match candidate skills from profile: {cv_summary[:300]}...
+5. Treat the requested roles as primary search signals, but do not require an exact title match if the job is clearly aligned with the candidate profile and role family. Close variants such as QA, test engineer, support engineer, product support, systems analyst, incident analyst, implementation specialist, customer success, and other related titles are valid when they match the CV experience.
+6. {language_hint if language_hint else 'Use the CV language signals when they matter for language-based roles but do not exclude otherwise suitable jobs.'}
+7. Return the exact direct URL of each job listing from the search result; never use N/A,
+    a company homepage, a search page, or a fabricated URL. If no direct listing URL is
+    available, include the job with "Not specified" and mark the URL status accordingly.
+8. Extract the posting date when visible. Use "Not specified" only when the listing does
+    not show a date. Normalize working type to exactly Remote, Hybrid, On-site, or
+    Not specified.
+9. Extract the salary or compensation exactly as shown. Use "Not specified" when it is
+    not available; do not estimate or invent salary.
+10. Select the best matching CV filename from this list and return it exactly:
+    [{", ".join(cv_names)}]
+11. Provide a concrete recommendation for tailoring that selected CV to this job,
+    including which skills, experience, or keywords to emphasize.
+12. Extract the complete job description from the original listing, preserving all
+    available sections, paragraphs, responsibilities, requirements, qualifications,
+    benefits, and other visible content. Do not summarize or shorten it. Do not invent
+    details. The description must contain at least 500 characters of source text. If the
+    full description cannot be retrieved, do not return that job.
+13. Check sources in this strict order: first the exact LinkedIn posting, then the exact
+    job-board posting (Indeed, IrishJobs, Jobs.ie, Greenhouse, Workday, or another board),
+    then the employer's official careers listing. Inspect the LinkedIn page status before using
+    any other source. If LinkedIn says "No longer accepting applications", "applications
+    are closed", "position is no longer open", or similar, classify the role as Expired,
+    quote that wording in the verification notes, and do not return or save it as Active.
+    A job-board copy, official homepage, or older search snippet must never override a
+    LinkedIn closure message. Do not treat a company careers homepage, a generic
+    Greenhouse board, or a different job ID as verification. The official page must show
+    the exact job title and employer; otherwise mark it No.
+14. Set Listing Source to Official company website or the job-board name. Set Official
+    Listing Verified to Yes only when the exact role is found on the official employer
+    site; otherwise set it to No and put Not specified in Official Listing URL.
+15. Always return Original Listing URL as the exact direct URL where the job was found.
+    Return the official URL in URL when verified; otherwise return the original job-board
+    URL in URL.
+16. Use this applied-job history as a strong preference signal. Prioritize new jobs that
+    resemble the user's repeatedly applied role families and title patterns, but do not
+    assume that every previously applied role is suitable. The CV, target roles, exclusion
+    list, location, freshness, exact listing identity, expiry checks, and language fit remain
+    mandatory.
+17. Applied-job preference profile:
 {applied_job_preferences}
-          15. Existing saved-job ledger for duplicate checking:
+18. Existing saved-job ledger for duplicate checking:
 {existing_jobs_summary}
 
-        FIT SCORE RUBRIC — follow this exactly when setting "Fit Score (%)":
-        Start at 100 and apply the following deductions before assigning the score.
+FIT SCORE RUBRIC — follow this exactly when setting "Fit Score (%)":
+Start at 100 and apply the following deductions before assigning the score.
 
-        HARD REQUIREMENT PENALTIES (apply each that is unmet):
-        - Named proprietary tool/platform the candidate has no experience with (e.g. SAP, Salesforce,
-          Hogan, Unibanks, Workday, ServiceNow, specific CMS): -20 per unmet tool, max -40
-        - Required years of experience the candidate clearly does not meet (e.g. "5+ years" when
-          candidate has 1-2 years in that discipline): -20 per unmet requirement, max -30
-        - Mandatory degree or certification not present on the CV (e.g. "postgraduate required",
-          "CPA required", "CISSP required"): -25
-        - Required domain-specific background the candidate has none of (e.g. "pharma GxP experience
-          required", "financial services background required"): -20
-        - Automation or testing framework experience explicitly required but candidate's experience
-          is clearly in a different form of automation (e.g. role requires Playwright/Selenium/
-          Cypress test automation; candidate has workflow/process automation only): -20
+HARD REQUIREMENT PENALTIES (apply each that is unmet):
+- Named proprietary tool/platform the candidate has no experience with (e.g. SAP, Salesforce,
+  Hogan, Unibanks, Workday, ServiceNow, specific CMS): -20 per unmet tool, max -40
+- Required years of experience the candidate clearly does not meet (e.g. "5+ years" when
+  candidate has 1-2 years in that discipline): -20 per unmet requirement, max -30
+- Mandatory degree or certification not present on the CV (e.g. "postgraduate required",
+  "CPA required", "CISSP required"): -25
+- Required domain-specific background the candidate has none of (e.g. "pharma GxP experience
+  required", "financial services background required"): -20
+- Automation or testing framework experience explicitly required but candidate's experience
+  is clearly in a different form of automation (e.g. role requires Playwright/Selenium/
+  Cypress test automation; candidate has workflow/process automation only): -20
 
-        OVERMATCHING GUARD — keyword presence alone is not a match:
-        - Do not award credit for a skill or tool if the CV only mentions it in passing or lists it
-          without demonstrating professional depth. Only count skills with clear evidence of sustained
-          use (multiple roles, quantified outcomes, or project ownership).
-        - Do not treat "QA" as equivalent to "test automation". Do not treat "Python scripting" as
-          equivalent to "software engineering". Do not treat "data analysis" as equivalent to
-          "BI/data analytics tooling experience". Match the depth, not just the keyword.
+OVERMATCHING GUARD — keyword presence alone is not a match:
+- Do not award credit for a skill or tool if the CV only mentions it in passing or lists it
+  without demonstrating professional depth. Only count skills with clear evidence of sustained
+  use (multiple roles, quantified outcomes, or project ownership).
+- Do not treat "QA" as equivalent to "test automation". Do not treat "Python scripting" as
+  equivalent to "software engineering". Do not treat "data analysis" as equivalent to
+  "BI/data analytics tooling experience". Match the depth, not just the keyword.
 
-        SCORING FLOOR:
-        - Any job with 2 or more unmet hard requirements must score 65% or below.
-        - Any job with a named proprietary tool requirement the candidate clearly lacks must score
-          70% or below, regardless of other matches.
+SCORING FLOOR:
+- Any job with 2 or more unmet hard requirements must score 65% or below.
+- Any job with a named proprietary tool requirement the candidate clearly lacks must score
+  70% or below, regardless of other matches.
 
-        For "Match Reasons": write 2-4 sentences explaining the strongest genuine overlaps between
-        the candidate profile and this specific role. Be honest — do not pad with generic claims.
+For "Match Reasons": write 2-4 sentences explaining the strongest genuine overlaps between
+the candidate profile and this specific role. Be honest — do not pad with generic claims.
 
-        For "Missing Requirements": list every hard requirement from the job description that the
-        candidate does not clearly meet. Use a bullet list. Write "None identified" if there are
-        no meaningful gaps. This field must reflect the actual job description, not generic advice.
+For "Missing Requirements": list every hard requirement from the job description that the
+candidate does not clearly meet. Use a bullet list. Write "None identified" if there are
+no meaningful gaps. This field must reflect the actual job description, not generic advice.
 
-        Output ONLY a valid JSON array (no markdown, no ```json wrapper):
-        [
-          {{
-            "Job Title": "Exact Job Title",
-            "Company": "Company Name",
-            "Location": "Location",
-            "Fit Score (%)": "e.g., 85%",
-            "Match Reasons": "2-4 sentences on genuine overlaps",
-            "Missing Requirements": "Bullet list of unmet hard requirements, or None identified",
-            "Job Description": "Complete job description copied verbatim from the original listing",
-            "Recommended CV": "Exact uploaded CV filename",
-            "CV Tailoring Recommendation": "Specific changes or emphasis for this job",
-            "Status": "Active",
-            "URL": "https://direct-job-listing-url",
-            "Listing Source": "Official company website or job board name",
-            "Official Listing Verified": "Yes or No",
-            "Official Listing URL": "https://official-exact-job-listing or Not specified",
-            "Original Listing URL": "https://exact-source-job-listing",
-            "Posted Date": "YYYY-MM-DD or Not specified",
-            "Working Type": "Remote, Hybrid, On-site, or Not specified",
-            "Salary": "Salary or compensation exactly as listed, or Not specified"
-          }}
-        ]
-        """
+Output ONLY a valid JSON array (no markdown, no ```json wrapper):
+[
+  {{
+    "Job Title": "Exact Job Title",
+    "Company": "Company Name",
+    "Location": "Location",
+    "Fit Score (%)": "e.g., 85%",
+    "Match Reasons": "2-4 sentences on genuine overlaps",
+    "Missing Requirements": "Bullet list of unmet hard requirements, or None identified",
+    "Job Description": "Complete job description copied verbatim from the original listing",
+    "Recommended CV": "Exact uploaded CV filename",
+    "CV Tailoring Recommendation": "Specific changes or emphasis for this job",
+    "Status": "Active",
+    "URL": "https://direct-job-listing-url",
+    "Listing Source": "Official company website or job board name",
+    "Official Listing Verified": "Yes or No",
+    "Official Listing URL": "https://official-exact-job-listing or Not specified",
+    "Original Listing URL": "https://exact-source-job-listing",
+    "Posted Date": "YYYY-MM-DD or Not specified",
+    "Working Type": "Remote, Hybrid, On-site, or Not specified",
+    "Salary": "Salary or compensation exactly as listed, or Not specified"
+  }}
+]
+"""
 
-        prompt = (
-            f"Search Google for job listings in {location_str} "
-            f"for these roles: {batch_roles_str}. "
-            f"Only include jobs posted in the last {max_posting_age_days} days. "
-            f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
-            f"Do not return any title/company pair already present in the complete saved-job ledger "
-            f"included in your instructions. "
-            f"Match them against this candidate profile and score strictly using the rubric in your instructions:\n{cv_summary}"
-        )
+prompt = (
+    f"Search Google for job listings in {location_str} and Ireland for these role signals: {batch_roles_str}. "
+    f"Look across relevant Irish job boards and employer pages, not only exact-title searches. "
+    f"Only include jobs posted in the last {max_posting_age_days} days. "
+    f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
+    f"Do not return any title/company pair already present in the complete saved-job ledger included in your instructions. "
+    f"Match them against this candidate profile and score strictly using the rubric in your instructions:\n{cv_summary}{language_hint}"
+)
         
         try:
             response = await call_gemini_with_retry(
