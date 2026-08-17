@@ -90,6 +90,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
   const [recommendedCvHtml, setRecommendedCvHtml] = useState<string | null>(null);
   const [recommendedCvFile, setRecommendedCvFile] = useState<File | null>(null);
   const [reanalyzingCv, setReanalyzingCv] = useState(false);
+  const [reanalyzeMessage, setReanalyzeMessage] = useState('');
   const [tailoredCv, setTailoredCv] = useState('');
   const [generatingTailoredCv, setGeneratingTailoredCv] = useState(false);
   const [tailoredCvMessage, setTailoredCvMessage] = useState('');
@@ -303,6 +304,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
   const reanalyzeCv = async () => {
     if (!job) return;
     setReanalyzingCv(true);
+    setReanalyzeMessage('');
     try {
       const formData = new FormData();
       formData.append('job_title', job['Job Title'] || '');
@@ -311,9 +313,11 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       const response = await apiFetch('/api/jobs/recommend-cv', { method: 'POST', body: formData });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || 'Could not re-match CV.');
-      setJob((current) => current ? { ...current, 'Recommended CV': data.recommended_cv } : current);
-    } catch {
-      // ignore — existing CV stays loaded
+      const newCv = data.recommended_cv as string;
+      setJob((current) => current ? { ...current, 'Recommended CV': newCv } : current);
+      setReanalyzeMessage(`Recommended: ${newCv}`);
+    } catch (err) {
+      setReanalyzeMessage(err instanceof Error ? err.message : 'Could not re-match CV.');
     } finally {
       setReanalyzingCv(false);
     }
@@ -493,6 +497,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                 </button>
               </div>
             </div>
+            {reanalyzeMessage && <p className="mb-2 text-sm text-indigo-800">{reanalyzeMessage}</p>}
             {tailoredCvMessage && <p className="mb-4 text-sm text-indigo-900">{tailoredCvMessage}</p>}
             <div className="mb-4 rounded-lg border border-indigo-200 bg-white p-4">
               <label htmlFor="cv-tailoring-prompt" className="mb-2 block text-sm font-semibold text-gray-900">Tell us how to tailor your CV</label>
