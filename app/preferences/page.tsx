@@ -117,18 +117,20 @@ export default function PreferencesPage() {
     setInput('')
   }
 
-  const RolePills = ({ roles, setRoles, input, setInput, placeholder }: {
+  const RolePills = ({ roles, setRoles, input, setInput, placeholder, pillClassName, removeClassName }: {
     roles: string[]
     setRoles: (roles: string[]) => void
     input: string
     setInput: (value: string) => void
     placeholder: string
+    pillClassName?: string
+    removeClassName?: string
   }) => (
     <div className="mt-6 min-h-60 flex-1 rounded-xl border border-slate-300 bg-white p-4 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 md:p-5">
       <div className="flex flex-wrap content-start gap-3">
         {roles.map((role) => (
-          <button key={role} type="button" onClick={() => setRoles(roles.filter((item) => item !== role))} className="inline-flex max-w-full items-center gap-2 rounded-full bg-blue-50 px-3 py-1.5 text-left text-xs font-semibold text-blue-700 hover:bg-blue-100" title="Remove role">
-            <span className="truncate">{role}</span><span aria-hidden="true" className="text-blue-400">x</span>
+          <button key={role} type="button" onClick={() => setRoles(roles.filter((item) => item !== role))} className={`inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-xs font-semibold ${pillClassName || 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`} title="Remove role">
+            <span className="truncate">{role}</span><span aria-hidden="true" className={removeClassName || 'text-blue-400'}>x</span>
           </button>
         ))}
         <input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => handleRoleInput(event, roles, setRoles, input, setInput)} onBlur={() => { const nextRoles = addRole(roles, input); setRoles(nextRoles); setInput('') }} placeholder={roles.length ? 'Add another role...' : placeholder} className="min-w-[14rem] flex-1 border-0 px-1 py-2 text-sm text-slate-800 outline-none" />
@@ -154,7 +156,7 @@ export default function PreferencesPage() {
           <label className="flex min-h-[25rem] w-full flex-col rounded-2xl border border-slate-200 bg-white p-7 text-sm font-semibold text-slate-800 shadow-sm md:p-8">
             <span className="block text-base">Roles to leave out</span>
             <span className="mt-1 block font-normal text-slate-500">Add roles you do not want included in your results.</span>
-            <RolePills roles={excludedRoles} setRoles={setExcludedRoles} input={excludedInput} setInput={setExcludedInput} placeholder="Type a role and press Enter" />
+            <RolePills roles={excludedRoles} setRoles={setExcludedRoles} input={excludedInput} setInput={setExcludedInput} placeholder="Type a role and press Enter" pillClassName="bg-red-50 text-red-700 hover:bg-red-100" removeClassName="text-red-400" />
           </label>
         </div>
         <div className="mt-8 flex min-h-16 flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-6 py-4 shadow-sm">
