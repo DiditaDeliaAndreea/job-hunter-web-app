@@ -14,6 +14,11 @@ type CountItem = {
   count: number;
 };
 
+function normalizeVerificationStatus(value: unknown): string {
+  const status = String(value || '').trim();
+  return ['Active', 'Expired', 'Blocked', 'Not found', 'Not verified'].includes(status) ? status : 'Not verified';
+}
+
 function countBy(jobs: Job[], field: string, fallback: string): CountItem[] {
   const counts = new Map<string, number>();
   jobs.forEach((job) => {
@@ -48,7 +53,7 @@ function getRoleType(job: Job): string {
   if (/(consultant|product specialist|product management)/i.test(title)) {
     return 'Product & Consulting';
   }
-  return 'Other';
+  return String(job['Job Title'] || '').trim() || 'Unspecified role';
 }
 
 function StatCard({ label, value, detail, icon: Icon, accent }: {
@@ -131,9 +136,9 @@ export default function StatsPage() {
   const stats = useMemo(() => {
     const applied = jobs.filter((job) => job.Applied === 'Yes').length;
     const openJobs = jobs.filter((job) => job.Applied !== 'Yes');
-    const active = openJobs.filter((job) => job['Verification Status'] === 'Active').length;
-    const expired = openJobs.filter((job) => job['Verification Status'] === 'Expired').length;
-    const verified = jobs.filter((job) => ['Active', 'Expired', 'Blocked'].includes(String(job['Verification Status'] || ''))).length;
+    const active = openJobs.filter((job) => normalizeVerificationStatus(job['Verification Status']) === 'Active').length;
+    const expired = openJobs.filter((job) => normalizeVerificationStatus(job['Verification Status']) === 'Expired').length;
+    const verified = jobs.filter((job) => ['Active', 'Expired', 'Blocked'].includes(normalizeVerificationStatus(job['Verification Status']))).length;
     const salaryKnown = jobs.filter((job) => {
       const salary = String(job.Salary || '').trim().toLowerCase();
       return salary && salary !== 'not specified';
@@ -154,6 +159,8 @@ export default function StatsPage() {
     };
   }, [jobs]);
 
+  const openJobs = useMemo(() => jobs.filter((job) => job.Applied !== 'Yes'), [jobs]);
+
   const appliedCompanies = useMemo(
     () => countBy(jobs.filter((job) => job.Applied === 'Yes'), 'Company', 'Unknown company').slice(0, 8),
     [jobs]
@@ -169,7 +176,11 @@ export default function StatsPage() {
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [jobs]);
-  const statuses = useMemo(() => countBy(jobs, 'Verification Status', 'Not verified'), [jobs]);
+  const statuses = useMemo(() => countBy(
+    openJobs.map((job) => ({ ...job, 'Verification Status': normalizeVerificationStatus(job['Verification Status']) })),
+    'Verification Status',
+    'Not verified'
+  ), [openJobs]);
   const workingTypes = useMemo(() => countBy(jobs, 'Working Type', 'Not specified'), [jobs]);
 
   return (
