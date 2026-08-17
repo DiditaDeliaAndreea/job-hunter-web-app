@@ -191,6 +191,7 @@ def rename_cv(user_id: str, cv_id: str, new_name: str) -> Dict[str, Any]:
     if not snapshot.exists:
         raise KeyError("CV not found")
     record = snapshot.to_dict() or {}
+    old_name = str(record.get("name") or "")
     old_path = str(record.get("storage_path") or "")
     if old_path:
         prefix = old_path.rsplit("/", 1)[0]
@@ -201,7 +202,19 @@ def rename_cv(user_id: str, cv_id: str, new_name: str) -> Dict[str, Any]:
         record["storage_path"] = new_path
     record["name"] = new_name
     document.set(record)
+    if old_name and old_name != new_name:
+        _update_cv_name_in_jobs(user_id, old_name, new_name)
     return record
+
+
+def _update_cv_name_in_jobs(user_id: str, old_name: str, new_name: str) -> None:
+    """Update the Recommended CV field in all jobs that reference the old CV filename."""
+    collection = _jobs_collection(user_id)
+    for doc in collection.stream():
+        data = (doc.to_dict() or {}).get("data") or {}
+        if data.get("Recommended CV") == old_name:
+            data["Recommended CV"] = new_name
+            collection.document(doc.id).set({"data": data})
 
 
 def save_prompt_preference(

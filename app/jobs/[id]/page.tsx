@@ -7,6 +7,7 @@ import { ArrowLeft, ExternalLink, Briefcase, FileText, Sparkles, Pencil, Check, 
 import { getUploadedCv } from '../../../utils/browserStorage';
 import mammoth from 'mammoth';
 import { apiFetch } from '../../../lib/api';
+import { firebaseAuth } from '../../../lib/firebase';
 import BackButton from '../../back-button';
 
 interface JobRecord {
@@ -168,6 +169,11 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
       // Fall back to backend (Firebase Storage) when not cached locally
       if (!file) {
         try {
+          // Wait for Firebase auth to be ready before hitting the API
+          await new Promise<void>((resolve) => {
+            const unsubscribe = firebaseAuth?.onAuthStateChanged(() => { unsubscribe?.(); resolve(); });
+            if (!firebaseAuth) resolve();
+          });
           const listResponse = await apiFetch('/api/cvs');
           if (listResponse.ok) {
             const { cvs } = await listResponse.json() as { cvs: { id: string; name: string }[] };
@@ -482,7 +488,9 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                 ) : recommendedCvUrl ? (
                   <iframe src={recommendedCvUrl} title="Recommended CV" className="h-[65vh] w-full rounded border border-gray-200" />
                 ) : (
-                  <p className="text-sm text-gray-500">{recommendedCvFile ? 'Preview is not available for this file type.' : 'CV not found in storage. Re-upload it from the home page to enable preview and tailoring.'}</p>
+                  <p className="text-sm text-gray-500">
+                    {recommendedCvFile ? 'Preview is not available for this file type.' : <>CV not found. <Link href="/my-cvs" className="text-blue-600 underline hover:text-blue-800">Go to My CVs</Link> to upload or re-upload it.</>}
+                  </p>
                 )}
               </div>
               <div className="rounded-lg border border-indigo-200 bg-white p-5">

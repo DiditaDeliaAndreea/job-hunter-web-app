@@ -38,3 +38,24 @@ export async function getUploadedCv(name: string): Promise<File | null> {
   database.close();
   return file;
 }
+
+export async function renameUploadedCv(oldName: string, newName: string): Promise<void> {
+  if (typeof indexedDB === 'undefined' || !oldName || !newName || oldName === newName) return;
+
+  const database = await openCvDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(CV_STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(CV_STORE_NAME);
+    const getRequest = store.get(oldName);
+    getRequest.onsuccess = () => {
+      const record = getRequest.result;
+      if (!record) { resolve(); return; }
+      const renamedFile = new File([record.file], newName, { type: record.file.type });
+      store.delete(oldName);
+      store.put({ name: newName, file: renamedFile });
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error('Could not rename CV in storage.'));
+  });
+  database.close();
+}

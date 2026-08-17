@@ -6,6 +6,7 @@ import { ArrowLeft, FileText, Upload } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import mammoth from 'mammoth'
 import { readCachedCvs, writeCachedCvs } from '../lib/client-cache'
+import { saveUploadedCvs, renameUploadedCv } from '../utils/browserStorage'
 import BackButton from './back-button'
 
 type ImportedCv = { id: string; name: string; size?: number; created_at?: string }
@@ -105,6 +106,7 @@ export default function CvPage() {
       const response = await apiFetch('/api/cvs', { method: 'POST', body: formData })
       const data = await response.json()
       if (!response.ok) throw new Error(data?.detail || 'Could not upload CVs.')
+      void saveUploadedCvs(files)
       setMessage(`${data.cvs?.length || 0} CVs saved.`)
       await loadCvs()
     } catch (error) {
@@ -143,6 +145,7 @@ export default function CvPage() {
       const response = await apiFetch(`/api/cvs/${cv.id}`, { method: 'PATCH', body: formData })
       const data = await response.json()
       if (!response.ok) throw new Error(data?.detail || 'Could not rename CV.')
+      void renameUploadedCv(cv.name, data.cv.name)
       setCvs((current) => current.map((item) => item.id === cv.id ? { ...item, name: data.cv.name } : item))
       writeCachedCvs(cvs.map((item) => item.id === cv.id ? { ...item, name: data.cv.name } : item))
       setSelectedCv((current) => current?.id === cv.id ? { ...current, name: data.cv.name } : current)
