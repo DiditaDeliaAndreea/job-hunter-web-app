@@ -79,7 +79,6 @@ export default function Home() {
   const [importedCvs, setImportedCvs] = useState<ImportedCv[]>(cachedCvs);
   const [selectedCvIds, setSelectedCvIds] = useState<string[]>(cachedCvs.map((record) => record.id));
   const [uploadingCvs, setUploadingCvs] = useState(false);
-  const [importingCsv, setImportingCsv] = useState(false);
   const [targetRoles, setTargetRoles] = useState<string[]>(cachedPreferences?.targetRoles || []);
   const [excludedRoles, setExcludedRoles] = useState<string[]>(cachedPreferences?.excludedRoles || []);
   const [targetRoleInput, setTargetRoleInput] = useState('');
@@ -170,9 +169,7 @@ export default function Home() {
       writeCachedJobs(csvJobs);
       setJobs(csvJobs);
 
-      if (updateMessage && csvJobs.length > 0) {
-        setSearchMessage(`Loaded ${data.total} jobs from previous search`);
-      } else if (updateMessage) {
+      if (updateMessage && csvJobs.length === 0) {
         setSearchMessage('No saved job matches in CSV yet.');
       }
     } catch (error) {
@@ -180,21 +177,6 @@ export default function Home() {
       if (updateMessage) {
         setSearchMessage('Unable to load saved jobs. Start the FastAPI backend on port 8000.');
       }
-    }
-  };
-
-  const importExistingCsv = async () => {
-    setImportingCsv(true);
-    try {
-      const response = await apiFetch('/api/jobs/import-csv', { method: 'POST' });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data?.detail || 'Could not import the existing CSV.');
-      setSearchMessage(data.message || 'Existing CSV jobs imported.');
-      await fetchJobs(false);
-    } catch (error) {
-      setSearchMessage(error instanceof Error ? error.message : 'Could not import the existing CSV.');
-    } finally {
-      setImportingCsv(false);
     }
   };
 
@@ -667,9 +649,6 @@ export default function Home() {
           <p className="mt-2 max-w-2xl text-sm text-slate-600">Choose a CV, set your role preferences, and search for fresh opportunities.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={() => void importExistingCsv()} disabled={importingCsv} className="rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
-            {importingCsv ? 'Importing...' : 'Import previous jobs'}
-          </button>
           <Link href="/stats" className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700">
             <BarChart3 className="h-4 w-4" /> View stats
           </Link>
