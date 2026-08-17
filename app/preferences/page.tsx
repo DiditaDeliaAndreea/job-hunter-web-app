@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { ArrowLeft, Save } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
 import { readCachedPreferences, writeCachedPreferences } from '../../lib/client-cache'
+import BackButton from '../back-button'
 
 const STORAGE_KEY = 'careermatch-role-preferences'
 
@@ -141,7 +142,7 @@ export default function PreferencesPage() {
   return (
     <main className="min-h-screen bg-slate-50 px-5 py-10 text-slate-900 md:px-12 lg:px-16">
       <div className="w-full">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:text-blue-900"><ArrowLeft className="h-4 w-4" /> Back to jobs</Link>
+        <BackButton label="Back to jobs" />
         <header className="mt-10 rounded-2xl border border-slate-200 bg-white px-7 py-9 shadow-sm md:px-10">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Search settings</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">Job preferences</h1>

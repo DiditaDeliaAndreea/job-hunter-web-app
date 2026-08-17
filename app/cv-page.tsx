@@ -6,6 +6,7 @@ import { ArrowLeft, FileText, Upload } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import mammoth from 'mammoth'
 import { readCachedCvs, writeCachedCvs } from '../lib/client-cache'
+import BackButton from './back-button'
 
 type ImportedCv = { id: string; name: string; size?: number; created_at?: string }
 type PreviewCacheEntry = { url?: string; html?: string }
@@ -154,7 +155,7 @@ export default function CvPage() {
   return (
     <main className="min-h-screen bg-gray-50 px-5 py-8 text-gray-900 md:px-10">
       <div className="w-full">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:text-blue-900"><ArrowLeft className="h-4 w-4" /> Back to jobs</Link>
+        <BackButton label="Back to jobs" />
         <header className="mt-8 flex flex-wrap items-end justify-between gap-4 border-b border-gray-200 pb-6"><div><h1 className="text-3xl font-bold tracking-tight">My CVs</h1><p className="mt-2 text-gray-500">Your saved CVs are ready to use for job searches and tailoring.</p></div><label className="inline-flex cursor-pointer items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"><Upload className="h-4 w-4" /> Add CVs<input type="file" accept=".pdf,.docx" multiple onChange={upload} className="hidden" /></label></header>
         {message && <p className="mt-5 rounded-md border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800">{message}</p>}
         <div className="mt-8 grid w-full gap-10 lg:grid-cols-[minmax(0,0.8fr)_minmax(560px,1.5fr)]">

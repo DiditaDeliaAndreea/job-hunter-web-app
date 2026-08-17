@@ -7,6 +7,7 @@ import { ArrowLeft, ExternalLink, Briefcase, FileText, Sparkles, Pencil, Check, 
 import { getUploadedCv } from '../../../utils/browserStorage';
 import mammoth from 'mammoth';
 import { apiFetch } from '../../../lib/api';
+import BackButton from '../../back-button';
 
 interface JobRecord {
   [key: string]: string | undefined;
@@ -182,9 +183,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
   if (error || !job) {
     return (
       <main className="min-h-screen w-full px-4 py-8 md:px-8">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm text-blue-600 hover:underline">
-          <ArrowLeft className="h-4 w-4" /> Back to matches
-        </Link>
+        <BackButton label="Back to matches" />
         <div className="mt-10 rounded-xl border border-red-200 bg-red-50 p-6 text-red-800">
           {error || 'Job match not found.'}
         </div>
@@ -349,9 +348,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
 
   return (
     <main className="min-h-screen w-full px-4 py-6 md:px-8 md:py-8">
-      <Link href="/" className="inline-flex items-center gap-2 text-sm font-medium text-blue-600 hover:underline">
-        <ArrowLeft className="h-4 w-4" /> Back to matches
-      </Link>
+      <BackButton label="Back to matches" />
 
       <header className="mt-8 border-b border-gray-200 pb-6">
         <div className="flex items-start gap-3">

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, BarChart3, BriefcaseBusiness, CheckCircle2, Clock3, RefreshCw, Target } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { readCachedJobs, writeCachedJobs } from '../../lib/client-cache';
+import BackButton from '../back-button';
 
 type Job = Record<string, string | undefined>;
 
@@ -174,9 +175,7 @@ export default function StatsPage() {
     <main className="min-h-screen bg-gray-50 px-4 py-6 text-gray-900 md:px-8 lg:px-10">
       <header className="mx-auto mb-8 flex max-w-7xl flex-wrap items-center justify-between gap-4">
         <div>
-          <Link href="/" className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:text-blue-900">
-            <ArrowLeft className="h-4 w-4" /> Back to jobs
-          </Link>
+          <div className="mb-3"><BackButton label="Back to jobs" /></div>
           <h1 className="text-4xl font-bold tracking-tight">Job search stats</h1>
           <p className="mt-2 text-gray-500">A clear view of your saved opportunities and applications.</p>
         </div>

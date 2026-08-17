@@ -1,15 +1,15 @@
 'use client'
 
-import Link from 'next/link'
-import { ArrowLeft, Mail, ShieldCheck } from 'lucide-react'
+import { Mail, ShieldCheck } from 'lucide-react'
 import { useAuth } from '../auth-provider'
+import BackButton from '../back-button'
 
 export default function AccountPage() {
   const { user } = useAuth()
   return (
     <main className="min-h-screen bg-slate-50 px-5 py-8 text-slate-900 md:px-10">
       <div className="mx-auto max-w-4xl">
-        <Link href="/" className="inline-flex items-center gap-2 text-sm font-medium text-blue-700 hover:text-blue-900"><ArrowLeft className="h-4 w-4" /> Back to jobs</Link>
+        <BackButton label="Back to jobs" />
         <header className="mt-8 rounded-2xl border border-slate-200 bg-white px-6 py-7 shadow-sm md:px-8">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-blue-700">Profile</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">Account</h1>
