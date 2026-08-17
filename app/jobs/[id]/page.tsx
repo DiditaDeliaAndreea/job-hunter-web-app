@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, ExternalLink, Briefcase, FileText, Sparkles, Pencil, Check, X, Trash2 } from 'lucide-react';
+import { ArrowLeft, ExternalLink, Briefcase, FileText, RefreshCw, Sparkles, Pencil, Check, X, Trash2 } from 'lucide-react';
 import { getUploadedCv } from '../../../utils/browserStorage';
 import mammoth from 'mammoth';
 import { apiFetch } from '../../../lib/api';
@@ -82,12 +82,14 @@ function renderHighlightedTailoredCv(tailoredCv: string, originalCv: string, job
 
 export default function JobDetailsPage({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter();
+  const jobIndexRef = useRef<number | null>(null);
   const [job, setJob] = useState<JobRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [recommendedCvUrl, setRecommendedCvUrl] = useState<string | null>(null);
   const [recommendedCvHtml, setRecommendedCvHtml] = useState<string | null>(null);
   const [recommendedCvFile, setRecommendedCvFile] = useState<File | null>(null);
+  const [reanalyzingCv, setReanalyzingCv] = useState(false);
   const [tailoredCv, setTailoredCv] = useState('');
   const [generatingTailoredCv, setGeneratingTailoredCv] = useState(false);
   const [tailoredCvMessage, setTailoredCvMessage] = useState('');
@@ -120,7 +122,10 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
           throw new Error('This job match could not be found.');
         }
 
-        if (active) setJob(data.jobs[jobIndex]);
+        if (active) {
+          jobIndexRef.current = jobIndex;
+          setJob(data.jobs[jobIndex]);
+        }
       } catch (loadError) {
         if (active) {
           setError(loadError instanceof Error ? loadError.message : 'Could not load this job match.');
@@ -295,6 +300,25 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
     }
   };
 
+  const reanalyzeCv = async () => {
+    const idx = jobIndexRef.current;
+    if (idx === null) return;
+    setReanalyzingCv(true);
+    try {
+      const response = await apiFetch('/api/jobs');
+      if (response.ok) {
+        const data = await response.json() as { jobs: JobRecord[] };
+        if (Array.isArray(data.jobs) && data.jobs[idx]) {
+          setJob({ ...data.jobs[idx] });
+        }
+      }
+    } catch {
+      // ignore — the useEffect will still re-run with existing job data
+    } finally {
+      setReanalyzingCv(false);
+    }
+  };
+
   const generateTailoredCv = async () => {
     if (!job || !recommendedCvFile) {
       setTailoredCvMessage('The recommended CV is not available in browser storage.');
@@ -447,15 +471,27 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                 </div>
                 <p className="text-sm text-gray-700">Compare your recommended CV with a version tailored to this job.</p>
               </div>
-              <button
-                type="button"
-                onClick={generateTailoredCv}
-                disabled={generatingTailoredCv || !recommendedCvFile}
-                className="inline-flex items-center gap-2 rounded-md bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Sparkles className="h-4 w-4" />
-                {generatingTailoredCv ? 'Preparing...' : 'Tailor this CV'}
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void reanalyzeCv()}
+                  disabled={reanalyzingCv}
+                  title="Re-fetch job data and reload the recommended CV — use this after renaming or uploading a CV"
+                  className="inline-flex items-center gap-2 rounded-md border border-indigo-300 bg-white px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-4 w-4 ${reanalyzingCv ? 'animate-spin' : ''}`} />
+                  {reanalyzingCv ? 'Refreshing...' : 'Refresh CV'}
+                </button>
+                <button
+                  type="button"
+                  onClick={generateTailoredCv}
+                  disabled={generatingTailoredCv || !recommendedCvFile}
+                  className="inline-flex items-center gap-2 rounded-md bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  {generatingTailoredCv ? 'Preparing...' : 'Tailor this CV'}
+                </button>
+              </div>
             </div>
             {tailoredCvMessage && <p className="mb-4 text-sm text-indigo-900">{tailoredCvMessage}</p>}
             <div className="mb-4 rounded-lg border border-indigo-200 bg-white p-4">
