@@ -8,6 +8,10 @@ import mammoth from 'mammoth'
 import { readCachedCvs, writeCachedCvs } from '../lib/client-cache'
 
 type ImportedCv = { id: string; name: string; size?: number; created_at?: string }
+type PreviewCacheEntry = { url?: string; html?: string }
+
+const previewCache = new Map<string, PreviewCacheEntry>()
+const PREVIEW_TIMEOUT_MS = 20000
 
 export default function CvPage() {
   const [cvs, setCvs] = useState<ImportedCv[]>(() => readCachedCvs<ImportedCv>())
@@ -38,27 +42,46 @@ export default function CvPage() {
 
   useEffect(() => {
     let active = true
-    let objectUrl: string | null = null
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS)
     setPreviewUrl(null)
     setPreviewHtml(null)
-    if (!selectedCv) return () => undefined
+    if (!selectedCv) {
+      window.clearTimeout(timeoutId)
+      controller.abort()
+      return () => undefined
+    }
 
     const loadPreview = async () => {
       setPreviewLoading(true)
       try {
-        const response = await apiFetch(`/api/cvs/${selectedCv.id}/content`)
+        const cachedPreview = previewCache.get(selectedCv.id)
+        if (cachedPreview) {
+          if (active) {
+            setPreviewUrl(cachedPreview.url || null)
+            setPreviewHtml(cachedPreview.html || null)
+          }
+          return
+        }
+
+        const response = await apiFetch(`/api/cvs/${selectedCv.id}/content`, { signal: controller.signal })
         if (!response.ok) throw new Error('Could not open this CV.')
         const blob = await response.blob()
         if (selectedCv.name.toLowerCase().endsWith('.docx')) {
           const result = await mammoth.convertToHtml({ arrayBuffer: await blob.arrayBuffer() })
+          previewCache.set(selectedCv.id, { html: result.value })
           if (active) setPreviewHtml(result.value)
         } else {
-          objectUrl = URL.createObjectURL(blob)
+          const objectUrl = URL.createObjectURL(blob)
+          previewCache.set(selectedCv.id, { url: objectUrl })
           if (active) setPreviewUrl(objectUrl)
         }
       } catch (error) {
-        if (active) setMessage(error instanceof Error ? error.message : 'Could not open this CV.')
+        if (active) {
+          setMessage(controller.signal.aborted ? 'CV preview timed out. Please try again.' : error instanceof Error ? error.message : 'Could not open this CV.')
+        }
       } finally {
+        window.clearTimeout(timeoutId)
         if (active) setPreviewLoading(false)
       }
     }
@@ -66,7 +89,8 @@ export default function CvPage() {
     void loadPreview()
     return () => {
       active = false
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      window.clearTimeout(timeoutId)
+      controller.abort()
     }
   }, [selectedCv])
 
