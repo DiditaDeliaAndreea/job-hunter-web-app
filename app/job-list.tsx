@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, BriefcaseBusiness, CheckCircle2, ExternalLink, RefreshCw } from 'lucide-react'
+import { ArrowUpRight, BriefcaseBusiness, CheckCircle2, ExternalLink, RefreshCw, Trash2 } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { readCachedJobs, writeCachedJobs } from '../lib/client-cache'
 
@@ -72,6 +72,26 @@ export default function JobList({ applied }: { applied: boolean }) {
     }
   }
 
+  const dismissJob = async (job: Job) => {
+    const jobTitle = job['Job Title'] || ''
+    const company = job.Company || ''
+    if (!window.confirm(`Remove ${jobTitle}${company ? ` at ${company}` : ''} from your open jobs?`)) return
+
+    const formData = new FormData()
+    formData.append('job_title', jobTitle)
+    formData.append('company', company)
+    try {
+      const response = await apiFetch('/api/jobs/dismiss', { method: 'POST', body: formData })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data?.detail || 'Could not remove this job.')
+      setJobs((current) => current.filter(({ job: currentJob }) => !(currentJob['Job Title'] === jobTitle && currentJob.Company === company)))
+      const cachedJobs = readCachedJobs<Job>().filter((cachedJob) => !(cachedJob['Job Title'] === jobTitle && cachedJob.Company === company))
+      writeCachedJobs(cachedJobs)
+    } catch (dismissError) {
+      setError(dismissError instanceof Error ? dismissError.message : 'Could not remove this job.')
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-50 px-5 py-8 text-slate-900 md:px-10">
       <div className="mx-auto max-w-7xl">
@@ -128,7 +148,7 @@ export default function JobList({ applied }: { applied: boolean }) {
                     </div>
                     <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
                       <span className="truncate text-xs text-slate-500">{job['Working Type'] || 'Working type not specified'}</span>
-                      <div className="flex shrink-0 items-center gap-2"><Link href={`/jobs/${index}`} className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700">Details <ArrowUpRight className="h-3.5 w-3.5" /></Link>{job.URL && /^https?:\/\//i.test(job.URL) && <a href={job.URL} target="_blank" rel="noreferrer" className="rounded-md border border-slate-300 p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-700" title="Open listing"><ExternalLink className="h-4 w-4" /></a>}</div>
+                      <div className="flex shrink-0 items-center gap-2"><Link href={`/jobs/${index}`} className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700">Details <ArrowUpRight className="h-3.5 w-3.5" /></Link>{job.URL && /^https?:\/\//i.test(job.URL) && <a href={job.URL} target="_blank" rel="noreferrer" className="rounded-md border border-slate-300 p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-700" title="Open listing"><ExternalLink className="h-4 w-4" /></a>}{!applied && <button type="button" onClick={() => void dismissJob(job)} className="rounded-md border border-red-200 p-2 text-red-600 hover:bg-red-50" title="Remove job" aria-label={`Remove ${job['Job Title'] || 'job'}`}><Trash2 className="h-4 w-4" /></button>}</div>
                     </div>
                   </article>
                 )
