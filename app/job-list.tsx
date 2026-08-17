@@ -1,13 +1,31 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
-import { ArrowUpRight, BriefcaseBusiness, CheckCircle2, ExternalLink, RefreshCw, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowUpRight, BriefcaseBusiness, CheckCircle2, ExternalLink, Filter, RefreshCw, Trash2 } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { readCachedJobs, writeCachedJobs } from '../lib/client-cache'
 
 type Job = Record<string, string | undefined>
 type IndexedJob = { job: Job; index: number }
+
+function getPostedAgeDays(value: unknown): number | null {
+  const rawValue = String(value || '').trim()
+  if (!rawValue || rawValue.toLowerCase() === 'not specified') return null
+
+  const relativeMatch = rawValue.match(/(\d+)\s+(minute|hour|day|week)s?\s+ago/i)
+  if (relativeMatch) {
+    const amount = Number(relativeMatch[1])
+    const unit = relativeMatch[2].toLowerCase()
+    if (unit === 'minute' || unit === 'hour') return 0
+    if (unit === 'week') return amount * 7
+    return amount
+  }
+
+  const postedAt = new Date(rawValue)
+  if (Number.isNaN(postedAt.getTime())) return null
+  return Math.max(0, (Date.now() - postedAt.getTime()) / (1000 * 60 * 60 * 24))
+}
 
 export default function JobList({ applied }: { applied: boolean }) {
   const cachedJobs = readCachedJobs<Job>()
@@ -18,6 +36,12 @@ export default function JobList({ applied }: { applied: boolean }) {
   const [verificationProgress, setVerificationProgress] = useState(0)
   const [verificationMessage, setVerificationMessage] = useState('')
   const [verificationLogs, setVerificationLogs] = useState<string[]>([])
+  const [jobFilter, setJobFilter] = useState('')
+  const [workingTypeFilter, setWorkingTypeFilter] = useState('All')
+  const [minimumScore, setMinimumScore] = useState('0')
+  const [salaryFilter, setSalaryFilter] = useState('All')
+  const [postedDateFilter, setPostedDateFilter] = useState('All')
+  const [jobSort, setJobSort] = useState('fit-score-desc')
 
   const loadJobs = async () => {
     if (jobs.length === 0) setLoading(true)
@@ -92,6 +116,51 @@ export default function JobList({ applied }: { applied: boolean }) {
     }
   }
 
+  const displayedJobs = useMemo(() => {
+    const filtered = jobs.filter(({ job }) => {
+      const searchableText = [job['Job Title'], job.Company, job.Location].filter(Boolean).join(' ').toLowerCase()
+      const score = Number.parseInt(String(job['Fit Score (%)'] || '').replace('%', ''), 10)
+      const salary = String(job.Salary || '').trim().toLowerCase()
+      const hasSalary = Boolean(salary && salary !== 'not specified')
+      const ageDays = getPostedAgeDays(job['Posted Date'])
+      return (
+        (!jobFilter.trim() || searchableText.includes(jobFilter.trim().toLowerCase())) &&
+        (workingTypeFilter === 'All' || (job['Working Type'] || 'Not specified') === workingTypeFilter) &&
+        (minimumScore === '0' || Number.isNaN(score) || score >= Number(minimumScore)) &&
+        (salaryFilter === 'All' || (salaryFilter === 'Available' && hasSalary) || (salaryFilter === 'Not specified' && !hasSalary)) &&
+        (postedDateFilter === 'All' ||
+          (postedDateFilter === 'Not specified' && ageDays === null) ||
+          (postedDateFilter === '24h' && ageDays !== null && ageDays <= 1) ||
+          (postedDateFilter === '3d' && ageDays !== null && ageDays <= 3) ||
+          (postedDateFilter === '7d' && ageDays !== null && ageDays <= 7) ||
+          (postedDateFilter === 'Older' && ageDays !== null && ageDays > 7))
+      )
+    })
+
+    return [...filtered].sort((a, b) => {
+      const scoreA = Number.parseInt(String(a.job['Fit Score (%)'] || '').replace('%', ''), 10)
+      const scoreB = Number.parseInt(String(b.job['Fit Score (%)'] || '').replace('%', ''), 10)
+      const ageA = getPostedAgeDays(a.job['Posted Date'])
+      const ageB = getPostedAgeDays(b.job['Posted Date'])
+      switch (jobSort) {
+        case 'newest': return (ageA ?? Number.POSITIVE_INFINITY) - (ageB ?? Number.POSITIVE_INFINITY)
+        case 'oldest': return (ageB ?? Number.NEGATIVE_INFINITY) - (ageA ?? Number.NEGATIVE_INFINITY)
+        case 'title-asc': return String(a.job['Job Title'] || '').localeCompare(String(b.job['Job Title'] || ''))
+        case 'company-asc': return String(a.job.Company || '').localeCompare(String(b.job.Company || ''))
+        default: return (Number.isNaN(scoreB) ? -1 : scoreB) - (Number.isNaN(scoreA) ? -1 : scoreA)
+      }
+    })
+  }, [jobs, jobFilter, workingTypeFilter, minimumScore, salaryFilter, postedDateFilter, jobSort])
+
+  const clearJobFilters = () => {
+    setJobFilter('')
+    setWorkingTypeFilter('All')
+    setMinimumScore('0')
+    setSalaryFilter('All')
+    setPostedDateFilter('All')
+    setJobSort('fit-score-desc')
+  }
+
   return (
     <main className="min-h-screen bg-slate-50 px-5 py-8 text-slate-900 md:px-10">
       <div className="mx-auto max-w-7xl">
@@ -124,9 +193,58 @@ export default function JobList({ applied }: { applied: boolean }) {
           </section>
         ) : (
           <section className="mt-8">
-            <div className="mb-4 flex items-center justify-between gap-4"><h2 className="font-semibold">{jobs.length} {applied ? 'applied' : 'open'} {jobs.length === 1 ? 'job' : 'jobs'}</h2><span className="text-xs text-slate-500">Select a card for full details</span></div>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {jobs.map(({ job, index }) => {
+            <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h2 className="font-semibold">Refine {applied ? 'applied' : 'open'} jobs</h2>
+                  <p className="mt-1 text-xs text-slate-500">Showing {displayedJobs.length} of {jobs.length} jobs</p>
+                </div>
+                <button type="button" onClick={clearJobFilters} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Clear filters</button>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                <label className="text-sm text-slate-700 md:col-span-2 lg:col-span-2">
+                  <span className="mb-2 flex items-center gap-2 font-medium"><Filter className="h-4 w-4" /> Search jobs</span>
+                  <input type="search" value={jobFilter} onChange={(event) => setJobFilter(event.target.value)} placeholder="Title, company, or location" className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-blue-500 focus:outline-none" />
+                </label>
+                <label className="text-sm text-slate-700">
+                  <span className="mb-2 block font-medium">Order by</span>
+                  <select value={jobSort} onChange={(event) => setJobSort(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-blue-500 focus:outline-none">
+                    <option value="fit-score-desc">Best match</option>
+                    <option value="newest">Newest</option>
+                    <option value="oldest">Oldest</option>
+                    <option value="title-asc">Job title</option>
+                    <option value="company-asc">Company</option>
+                  </select>
+                </label>
+                <label className="text-sm text-slate-700">
+                  <span className="mb-2 block font-medium">Working type</span>
+                  <select value={workingTypeFilter} onChange={(event) => setWorkingTypeFilter(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-blue-500 focus:outline-none">
+                    <option>All</option><option>Remote</option><option>Hybrid</option><option>On-site</option><option>Not specified</option>
+                  </select>
+                </label>
+                <label className="text-sm text-slate-700">
+                  <span className="mb-2 block font-medium">Minimum match</span>
+                  <select value={minimumScore} onChange={(event) => setMinimumScore(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-blue-500 focus:outline-none">
+                    <option value="0">Any score</option><option value="70">70%+</option><option value="80">80%+</option><option value="90">90%+</option>
+                  </select>
+                </label>
+                <label className="text-sm text-slate-700">
+                  <span className="mb-2 block font-medium">Salary</span>
+                  <select value={salaryFilter} onChange={(event) => setSalaryFilter(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-blue-500 focus:outline-none">
+                    <option>All</option><option value="Available">Salary available</option><option value="Not specified">Not specified</option>
+                  </select>
+                </label>
+                <label className="text-sm text-slate-700">
+                  <span className="mb-2 block font-medium">Posted date</span>
+                  <select value={postedDateFilter} onChange={(event) => setPostedDateFilter(event.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-2 focus:border-blue-500 focus:outline-none">
+                    <option>All</option><option value="24h">Last 24 hours</option><option value="3d">Last 3 days</option><option value="7d">Last 7 days</option><option value="Older">Older than 7 days</option><option value="Not specified">Not specified</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="mb-4 flex items-center justify-between gap-4"><h2 className="font-semibold">{displayedJobs.length} {applied ? 'applied' : 'open'} {displayedJobs.length === 1 ? 'job' : 'jobs'}</h2><span className="text-xs text-slate-500">Select a card for full details</span></div>
+            {displayedJobs.length === 0 ? <p className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">No jobs match these filters.</p> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {displayedJobs.map(({ job, index }) => {
                 const status = job['Verification Status'] || 'Not verified'
                 const statusClass = applied
                   ? 'bg-emerald-50 text-emerald-700'
@@ -153,7 +271,7 @@ export default function JobList({ applied }: { applied: boolean }) {
                   </article>
                 )
               })}
-            </div>
+            </div>}
           </section>
         )}
       </div>
