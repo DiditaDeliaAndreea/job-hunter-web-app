@@ -130,8 +130,9 @@ export default function StatsPage() {
 
   const stats = useMemo(() => {
     const applied = jobs.filter((job) => job.Applied === 'Yes').length;
-    const active = jobs.filter((job) => job['Verification Status'] === 'Active').length;
-    const expired = jobs.filter((job) => job['Verification Status'] === 'Expired').length;
+    const openJobs = jobs.filter((job) => job.Applied !== 'Yes');
+    const active = openJobs.filter((job) => job['Verification Status'] === 'Active').length;
+    const expired = openJobs.filter((job) => job['Verification Status'] === 'Expired').length;
     const verified = jobs.filter((job) => ['Active', 'Expired', 'Blocked'].includes(String(job['Verification Status'] || ''))).length;
     const salaryKnown = jobs.filter((job) => {
       const salary = String(job.Salary || '').trim().toLowerCase();
