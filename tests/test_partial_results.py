@@ -1,4 +1,5 @@
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -27,12 +28,12 @@ async def test_call_gemini_uses_google_search_tool_when_requested(monkeypatch):
     fake_client = FakeClient()
     FakeClient._current_client = fake_client
     fake_genai = SimpleNamespace(Client=lambda **kwargs: fake_client if kwargs else fake_client)
-    monkeypatch.setattr(api, 'genai', fake_genai, raising=False)
+    monkeypatch.setitem(sys.modules, 'google.genai', fake_genai)
 
     result = await api.call_gemini_with_retry('instructions', 'prompt', use_google_search=True)
 
     assert result == '{"ok": true}'
-    assert fake_client.last_model == 'gemini-2.0-flash'
+    assert fake_client.last_model == 'gemini-flash-latest'
     assert fake_client.last_config['tools'] == [{'google_search': {}}]
 
 

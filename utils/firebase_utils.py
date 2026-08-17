@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 _database = None
 _database_lock = Lock()
 COLLECTION_NAME = "jobs"
+DIAGNOSTIC_LOGS_COLLECTION = "diagnostic_logs"
 
 
 def is_configured() -> bool:
@@ -111,6 +112,34 @@ def _cvs_collection(user_id: str):
     if not user_id:
         raise ValueError("A Firebase user ID is required for CV persistence")
     return _get_database().collection("users").document(user_id).collection("cvs")
+
+
+def _diagnostic_logs_collection(user_id: str):
+    if not user_id:
+        raise ValueError("A Firebase user ID is required for diagnostic logs")
+    return _get_database().collection("users").document(user_id).collection(DIAGNOSTIC_LOGS_COLLECTION)
+
+
+def save_diagnostic_log(user_id: str, event: str, details: Dict[str, Any]) -> Dict[str, Any]:
+    log_id = uuid.uuid4().hex
+    record = {
+        "id": log_id,
+        "event": event,
+        "details": details,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _diagnostic_logs_collection(user_id).document(log_id).set(record)
+    return record
+
+
+def fetch_diagnostic_logs(user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    records = [document.to_dict() for document in _diagnostic_logs_collection(user_id).stream()]
+    return sorted(records, key=lambda record: str(record.get("created_at", "")), reverse=True)[:limit]
+
+
+def fetch_all_diagnostic_logs(limit: int = 500) -> List[Dict[str, Any]]:
+    records = [document.to_dict() for document in _get_database().collection_group(DIAGNOSTIC_LOGS_COLLECTION).stream()]
+    return sorted(records, key=lambda record: str(record.get("created_at", "")), reverse=True)[:limit]
 
 
 def save_cv(user_id: str, filename: str, content_type: str, content: bytes) -> Dict[str, Any]:

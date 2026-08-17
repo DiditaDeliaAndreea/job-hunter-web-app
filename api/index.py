@@ -187,6 +187,63 @@ JOB_FIELDS = [
     "Verification Notes",
     "Last Verified",
 ]
+
+
+def _size_bucket(size: int) -> str:
+    if size <= 1 * 1024 * 1024:
+        return "0-1MB"
+    if size <= 5 * 1024 * 1024:
+        return "1-5MB"
+    if size <= 10 * 1024 * 1024:
+        return "5-10MB"
+    return "over-10MB"
+
+
+def _text_bucket(length: int) -> str:
+    if length < 100:
+        return "0-99"
+    if length < 1000:
+        return "100-999"
+    if length < 5000:
+        return "1000-4999"
+    return "5000+"
+
+
+def _file_type(filename: str) -> str:
+    suffix = Path(filename).suffix.lower()
+    return suffix[1:] if suffix in {".pdf", ".docx"} else "other"
+
+
+def _diagnostic_error_code(detail: object) -> str:
+    message = str(detail).lower()
+    if "scanned or image-only" in message or "no readable" in message or "selectable text" in message:
+        return "no_extractable_text"
+    if "corrupted" in message or "invalid" in message:
+        return "invalid_file"
+    if "rate" in message or "503" in message or "temporarily unavailable" in message:
+        return "provider_unavailable"
+    if "timeout" in message:
+        return "timeout"
+    return "internal_error"
+
+
+def record_diagnostic_event(user_id: str, event: str, details: Dict[str, Any] | None = None) -> None:
+    """Persist allowlisted operational data without user content."""
+    if not firebase_utils.is_configured():
+        return
+    try:
+        firebase_utils.save_diagnostic_log(user_id, event, details or {})
+    except Exception as exc:  # Diagnostics must never break the user request.
+        logger.warning("Could not persist diagnostic event %s: %s", event, type(exc).__name__)
+
+
+def is_diagnostics_admin(user_id: str) -> bool:
+    configured_admins = {
+        value.strip()
+        for value in os.getenv("ADMIN_UIDS", "").split(",")
+        if value.strip()
+    }
+    return user_id in configured_admins
 MIN_FULL_DESCRIPTION_LENGTH = 500
 
 
@@ -381,6 +438,42 @@ def parse_role_input(value: str | None, fallback: List[str]) -> List[str]:
 
     roles = [role.strip() for role in re.split(r"[,\n]", value) if role.strip()]
     return list(dict.fromkeys(roles)) or fallback.copy()
+
+
+def extract_cv_role_suggestions(cv_summary: str) -> List[str]:
+    """Read structured role suggestions from the CV analyzer response."""
+    try:
+        parsed = json.loads(cv_summary.strip())
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("matching_roles"), list):
+        return []
+
+    return list(dict.fromkeys(
+        str(role).strip()
+        for role in parsed["matching_roles"]
+        if str(role).strip()
+    ))
+
+
+def build_search_roles(
+    target_roles: List[str],
+    excluded_roles: List[str],
+    cv_summaries: List[str],
+) -> List[str]:
+    """Combine explicit and CV-inferred roles, then remove excluded roles."""
+    inferred_roles = [
+        role
+        for cv_summary in cv_summaries
+        for role in extract_cv_role_suggestions(cv_summary)
+    ]
+    excluded = {role.casefold() for role in excluded_roles}
+    return list(dict.fromkeys(
+        role
+        for role in [*target_roles, *inferred_roles]
+        if role.casefold() not in excluded
+    ))
 
 
 def build_applied_job_preferences(jobs: List[Dict[str, Any]]) -> str:
@@ -1318,6 +1411,11 @@ def validate_cv_filename(filename: str | None) -> None:
     logger.info(f"File {filename} passed validation checks")
 
 
+def has_extractable_cv_text(text: str) -> bool:
+    """Return whether extracted content contains enough readable CV text to analyze."""
+    return len(re.findall(r"[A-Za-z0-9]", text)) >= 20
+
+
 async def extract_cv_text_from_bytes(filename: str, content: bytes) -> str:
     """Extract text from a PDF or DOCX payload without needing the UploadFile object."""
     if not content:
@@ -1338,9 +1436,12 @@ async def extract_cv_text_from_bytes(filename: str, content: bytes) -> str:
                     cv_text += text
                     logger.debug(f"Extracted {len(text)} chars from PDF page {page_num}")
 
-            if not cv_text.strip():
+            if not has_extractable_cv_text(cv_text):
                 logger.warning("PDF extracted but contains no readable text")
-                raise HTTPException(status_code=422, detail="PDF contains no readable text")
+                raise HTTPException(
+                    status_code=422,
+                    detail="PDF contains no readable text. It may be scanned or image-only; upload a text-based PDF or DOCX.",
+                )
 
             logger.info(f"Successfully extracted {len(cv_text)} chars from PDF")
             return cv_text
@@ -1355,7 +1456,10 @@ async def extract_cv_text_from_bytes(filename: str, content: bytes) -> str:
         try:
             doc = Document(io.BytesIO(content))
             if not doc.paragraphs:
-                raise HTTPException(status_code=422, detail="DOCX has no content")
+                raise HTTPException(
+                    status_code=422,
+                    detail="DOCX contains no readable text. Check that the document contains selectable text.",
+                )
 
             cv_text = ""
             for para in doc.paragraphs:
@@ -1368,9 +1472,12 @@ async def extract_cv_text_from_bytes(filename: str, content: bytes) -> str:
                             cv_text += cell.text + " "
                     cv_text += "\n"
 
-            if not cv_text.strip():
+            if not has_extractable_cv_text(cv_text):
                 logger.warning("DOCX extracted but contains no readable text")
-                raise HTTPException(status_code=422, detail="DOCX contains no readable text")
+                raise HTTPException(
+                    status_code=422,
+                    detail="DOCX contains no readable text. Check that the document contains selectable text.",
+                )
 
             logger.info(f"Successfully extracted {len(cv_text)} chars from DOCX")
             return cv_text
