@@ -67,6 +67,10 @@ function getPreferredJobUrl(job: Record<string, any>): string | null {
   return /^https?:\/\/\S+$/i.test(sourceUrl) ? sourceUrl : null;
 }
 
+function parseRoleList(value: string): string[] {
+  return [...new Set(value.split(/[\n,]/).map((role) => role.trim()).filter(Boolean))];
+}
+
 export default function Home() {
   const cachedJobs = readCachedJobs<any>();
   const cachedCvs = readCachedCvs<ImportedCv>();
@@ -76,8 +80,10 @@ export default function Home() {
   const [selectedCvIds, setSelectedCvIds] = useState<string[]>(cachedCvs.map((record) => record.id));
   const [uploadingCvs, setUploadingCvs] = useState(false);
   const [importingCsv, setImportingCsv] = useState(false);
-  const [targetRoles, setTargetRoles] = useState(cachedPreferences?.targetRoles.join('\n') || '');
-  const [excludedRoles, setExcludedRoles] = useState(cachedPreferences?.excludedRoles.join('\n') || '');
+  const [targetRoles, setTargetRoles] = useState<string[]>(cachedPreferences?.targetRoles || []);
+  const [excludedRoles, setExcludedRoles] = useState<string[]>(cachedPreferences?.excludedRoles || []);
+  const [targetRoleInput, setTargetRoleInput] = useState('');
+  const [excludedRoleInput, setExcludedRoleInput] = useState('');
   const [reuseCvAnalysis, setReuseCvAnalysis] = useState(true);
   const [loading, setLoading] = useState(false);
   const [jobs, setJobs] = useState<any[]>(cachedJobs);
@@ -112,8 +118,8 @@ export default function Home() {
     if (savedPreferences) {
       try {
         const preferences = JSON.parse(savedPreferences);
-        setTargetRoles(typeof preferences.targetRoles === 'string' ? preferences.targetRoles : '');
-        setExcludedRoles(typeof preferences.excludedRoles === 'string' ? preferences.excludedRoles : '');
+        setTargetRoles(typeof preferences.targetRoles === 'string' ? parseRoleList(preferences.targetRoles) : []);
+        setExcludedRoles(typeof preferences.excludedRoles === 'string' ? parseRoleList(preferences.excludedRoles) : []);
       } catch {
         window.localStorage.removeItem(ROLE_PREFERENCES_STORAGE_KEY);
       }
@@ -260,18 +266,33 @@ export default function Home() {
     setFiles((currentFiles) => currentFiles.filter((selectedFile) => selectedFile.name !== fileName));
   };
 
+  const addRoles = (roles: string[], value: string) => [...new Set([...roles, ...parseRoleList(value)])];
+
+  const handleRoleInput = (
+    event: React.KeyboardEvent<HTMLInputElement>,
+    roles: string[],
+    setRoles: (nextRoles: string[]) => void,
+    input: string,
+    setInput: (value: string) => void,
+  ) => {
+    if (event.key !== 'Enter' && event.key !== ',') return;
+    event.preventDefault();
+    setRoles(addRoles(roles, input));
+    setInput('');
+  };
+
   const saveRolePreferences = () => {
     window.localStorage.setItem(
       ROLE_PREFERENCES_STORAGE_KEY,
-      JSON.stringify({ targetRoles, excludedRoles })
+      JSON.stringify({ targetRoles: targetRoles.join('\n'), excludedRoles: excludedRoles.join('\n') })
     );
     writeCachedPreferences({
-      targetRoles: targetRoles.split(/[\n,]/).map((role) => role.trim()).filter(Boolean),
-      excludedRoles: excludedRoles.split(/[\n,]/).map((role) => role.trim()).filter(Boolean),
+      targetRoles,
+      excludedRoles,
     });
     const formData = new FormData();
-    formData.append('target_roles', targetRoles);
-    formData.append('excluded_roles', excludedRoles);
+    formData.append('target_roles', targetRoles.join('\n'));
+    formData.append('excluded_roles', excludedRoles.join('\n'));
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(() => {
       setSearchMessage('Role preferences saved for future searches.');
     }).catch(() => setSearchMessage('Saved on this device. Could not sync preferences yet.'));
@@ -280,8 +301,10 @@ export default function Home() {
   const clearSavedRolePreferences = () => {
     window.localStorage.removeItem(ROLE_PREFERENCES_STORAGE_KEY);
     writeCachedPreferences({ targetRoles: [], excludedRoles: [] });
-    setTargetRoles('');
-    setExcludedRoles('');
+    setTargetRoles([]);
+    setExcludedRoles([]);
+    setTargetRoleInput('');
+    setExcludedRoleInput('');
     const formData = new FormData();
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(() => {
       setSearchMessage('Saved role preferences cleared. Default roles will be used.');
@@ -384,8 +407,8 @@ export default function Home() {
     const formData = new FormData();
     files.forEach((selectedFile) => formData.append('files', selectedFile));
     formData.append('cv_ids', selectedCvIds.join(','));
-    formData.append('target_roles', targetRoles);
-    formData.append('excluded_roles', excludedRoles);
+    formData.append('target_roles', targetRoles.join('\n'));
+    formData.append('excluded_roles', excludedRoles.join('\n'));
     formData.append('reuse_cv_analysis', String(reuseCvAnalysis));
 
     try {
@@ -742,23 +765,43 @@ export default function Home() {
             <div className="grid w-full gap-4 md:grid-cols-2">
             <label className="text-sm text-gray-700">
               <span className="mb-2 block font-medium">Target roles</span>
-              <textarea
-                value={targetRoles}
-                onChange={(e) => setTargetRoles(e.target.value)}
-                placeholder="One role per line, or separate roles with commas. Leave blank for default roles."
-                rows={5}
-                className="w-full rounded-lg border border-gray-300 p-3 text-sm focus:border-blue-500 focus:outline-none"
-              />
+              <div className="min-h-32 rounded-lg border border-gray-300 bg-white p-3 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100">
+                <div className="flex flex-wrap content-start gap-2">
+                  {targetRoles.map((role) => (
+                    <button key={role} type="button" onClick={() => setTargetRoles(targetRoles.filter((item) => item !== role))} className="inline-flex max-w-full items-center gap-2 rounded-full bg-blue-50 px-3 py-1.5 text-left text-xs font-semibold text-blue-700 hover:bg-blue-100" title="Remove role">
+                      <span className="truncate">{role}</span><span aria-hidden="true" className="text-blue-400">x</span>
+                    </button>
+                  ))}
+                  <input
+                    value={targetRoleInput}
+                    onChange={(event) => setTargetRoleInput(event.target.value)}
+                    onKeyDown={(event) => handleRoleInput(event, targetRoles, setTargetRoles, targetRoleInput, setTargetRoleInput)}
+                    onBlur={() => { setTargetRoles(addRoles(targetRoles, targetRoleInput)); setTargetRoleInput(''); }}
+                    placeholder={targetRoles.length ? 'Add another role...' : 'Type a role and press Enter'}
+                    className="min-w-[14rem] flex-1 border-0 px-1 py-2 text-sm text-gray-800 outline-none"
+                  />
+                </div>
+              </div>
             </label>
             <label className="text-sm text-gray-700">
               <span className="mb-2 block font-medium">Excluded roles</span>
-              <textarea
-                value={excludedRoles}
-                onChange={(e) => setExcludedRoles(e.target.value)}
-                placeholder="Roles to exclude, one per line. Leave blank for default exclusions."
-                rows={5}
-                className="w-full rounded-lg border border-gray-300 p-3 text-sm focus:border-blue-500 focus:outline-none"
-              />
+              <div className="min-h-32 rounded-lg border border-gray-300 bg-white p-3 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100">
+                <div className="flex flex-wrap content-start gap-2">
+                  {excludedRoles.map((role) => (
+                    <button key={role} type="button" onClick={() => setExcludedRoles(excludedRoles.filter((item) => item !== role))} className="inline-flex max-w-full items-center gap-2 rounded-full bg-red-50 px-3 py-1.5 text-left text-xs font-semibold text-red-700 hover:bg-red-100" title="Remove role">
+                      <span className="truncate">{role}</span><span aria-hidden="true" className="text-red-400">x</span>
+                    </button>
+                  ))}
+                  <input
+                    value={excludedRoleInput}
+                    onChange={(event) => setExcludedRoleInput(event.target.value)}
+                    onKeyDown={(event) => handleRoleInput(event, excludedRoles, setExcludedRoles, excludedRoleInput, setExcludedRoleInput)}
+                    onBlur={() => { setExcludedRoles(addRoles(excludedRoles, excludedRoleInput)); setExcludedRoleInput(''); }}
+                    placeholder={excludedRoles.length ? 'Add another role...' : 'Type a role and press Enter'}
+                    className="min-w-[14rem] flex-1 border-0 px-1 py-2 text-sm text-gray-800 outline-none"
+                  />
+                </div>
+              </div>
             </label>
           </div>
           </div>
