@@ -906,6 +906,62 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     logger.info("✅ Agent 1 completed: Candidate profile created")
     return response
 
+@app.post("/api/jobs/recommend-cv")
+async def recommend_cv_for_job(
+    job_title: str = Form(...),
+    company: str = Form(...),
+    job_description: str = Form(...),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Re-run CV matching for a saved job against the user's current CV library."""
+    cvs = firebase_utils.fetch_cvs(current_user["uid"])
+    if not cvs:
+        raise HTTPException(status_code=400, detail="No CVs found. Upload at least one CV in My CVs first.")
+
+    if len(cvs) == 1:
+        recommended = cvs[0]["name"]
+    else:
+        cv_profiles: List[tuple[str, str]] = []
+        for cv in cvs:
+            try:
+                record, content = firebase_utils.download_cv(current_user["uid"], cv["id"])
+                text = await extract_cv_text_from_bytes(cv["name"], content)
+                summary = await run_cv_analyzer_agent(text)
+                cv_profiles.append((cv["name"], summary[:2000]))
+            except Exception:
+                continue
+
+        if not cv_profiles:
+            raise HTTPException(status_code=400, detail="Could not read CV files from storage.")
+
+        profiles_block = "\n\n".join(
+            f"=== CV: {name} ===\n{summary}" for name, summary in cv_profiles
+        )
+        instructions = """You are an expert recruiter. Given a job description and several candidate
+        CV profiles, identify which CV is the strongest match for the role. Reply with ONLY the exact
+        CV filename — no explanation, no punctuation, just the filename."""
+        prompt = (
+            f"Job Title: {job_title}\nCompany: {company}\n\n"
+            f"Job Description:\n{job_description[:3000]}\n\n"
+            f"Candidate CV Profiles:\n{profiles_block}\n\n"
+            f"Which CV filename best matches this job?"
+        )
+        response = await call_gemini_with_retry(instructions, prompt)
+        recommended = cvs[0]["name"]
+        for cv in cvs:
+            if cv["name"].strip().lower() in response.strip().lower():
+                recommended = cv["name"]
+                break
+
+    all_jobs = firebase_utils.fetch_jobs(current_user["uid"])
+    for job in all_jobs:
+        if job.get("Job Title") == job_title and job.get("Company") == company:
+            job["Recommended CV"] = recommended
+    firebase_utils.replace_jobs(all_jobs, current_user["uid"])
+
+    return JSONResponse({"recommended_cv": recommended})
+
+
 @app.post("/api/jobs/tailor-cv")
 async def tailor_cv_for_job(
     cv_file: UploadFile = File(...),

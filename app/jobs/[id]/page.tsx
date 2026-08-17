@@ -301,19 +301,19 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
   };
 
   const reanalyzeCv = async () => {
-    const idx = jobIndexRef.current;
-    if (idx === null) return;
+    if (!job) return;
     setReanalyzingCv(true);
     try {
-      const response = await apiFetch('/api/jobs');
-      if (response.ok) {
-        const data = await response.json() as { jobs: JobRecord[] };
-        if (Array.isArray(data.jobs) && data.jobs[idx]) {
-          setJob({ ...data.jobs[idx] });
-        }
-      }
+      const formData = new FormData();
+      formData.append('job_title', job['Job Title'] || '');
+      formData.append('company', job.Company || '');
+      formData.append('job_description', job['Job Description'] || '');
+      const response = await apiFetch('/api/jobs/recommend-cv', { method: 'POST', body: formData });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || 'Could not re-match CV.');
+      setJob((current) => current ? { ...current, 'Recommended CV': data.recommended_cv } : current);
     } catch {
-      // ignore — the useEffect will still re-run with existing job data
+      // ignore — existing CV stays loaded
     } finally {
       setReanalyzingCv(false);
     }
@@ -480,7 +480,7 @@ export default function JobDetailsPage({ params }: { params: Promise<{ id: strin
                   className="inline-flex items-center gap-2 rounded-md border border-indigo-300 bg-white px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <RefreshCw className={`h-4 w-4 ${reanalyzingCv ? 'animate-spin' : ''}`} />
-                  {reanalyzingCv ? 'Refreshing...' : 'Refresh CV'}
+                  {reanalyzingCv ? 'Matching...' : 'Refresh recommended CV'}
                 </button>
                 <button
                   type="button"
