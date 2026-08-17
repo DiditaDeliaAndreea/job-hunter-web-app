@@ -136,8 +136,8 @@ export default function Home() {
         excludedRoles: Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles : [],
       };
       writeCachedPreferences(nextPreferences);
-      setTargetRoles(nextPreferences.targetRoles.join('\n'));
-      setExcludedRoles(nextPreferences.excludedRoles.join('\n'));
+      setTargetRoles(nextPreferences.targetRoles);
+      setExcludedRoles(nextPreferences.excludedRoles);
     } catch {
       // Local preferences remain available as a fallback.
     }
