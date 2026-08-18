@@ -1720,7 +1720,7 @@ async def run_incremental_job_finder(
             )
             update_search_status(
                 search_id,
-                f"Waiting for Gemini and Google Search results for batch {batch_idx}/{len(roles_batches)}...",
+                f"Waiting for structured job sources and configured search providers for batch {batch_idx}/{len(roles_batches)}...",
                 progress_pct,
             )
         try:
