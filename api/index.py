@@ -1207,7 +1207,7 @@ async def call_openai_fallback(
     use_google_search: bool,
     model: str | None = None,
 ) -> str | None:
-    """Use OpenAI only when configured and Gemini has exhausted its retries."""
+    """Call OpenAI and normalize web-search prose into the JSON contract when needed."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
@@ -1225,7 +1225,7 @@ async def call_openai_fallback(
         return client.responses.create(**request)
 
     try:
-        logger.warning("Gemini unavailable; trying OpenAI fallback...")
+        logger.info("Calling OpenAI%s...", " with web search" if use_google_search else "")
         response = await asyncio.wait_for(
             asyncio.to_thread(run_openai_request),
             timeout=120,
@@ -1233,7 +1233,47 @@ async def call_openai_fallback(
         text = getattr(response, "output_text", None)
         if text:
             logger.info("OpenAI fallback completed successfully")
-            return str(text)
+            text = str(text)
+            if not use_google_search:
+                return text
+
+            try:
+                extract_json_array(text)
+                return text
+            except json.JSONDecodeError:
+                logger.warning(
+                    "OpenAI web-search response was not a JSON array; requesting JSON normalization"
+                )
+
+            def run_openai_normalization() -> Any:
+                from openai import OpenAI
+
+                client = OpenAI(api_key=api_key)
+                normalization_instructions = (
+                    "Convert the source response into the exact JSON array requested by the original "
+                    "instructions. Preserve only factual job data from the source. Return ONLY a valid "
+                    "JSON array of objects, with no markdown, explanation, or citations outside the JSON."
+                )
+                return client.responses.create(
+                    model=model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+                    input=(
+                        f"{normalization_instructions}\n\n"
+                        f"ORIGINAL INSTRUCTIONS:\n{instructions}\n\n"
+                        f"ORIGINAL REQUEST:\n{prompt}\n\n"
+                        f"SOURCE RESPONSE:\n{text[:30000]}"
+                    ),
+                )
+
+            normalized_response = await asyncio.wait_for(
+                asyncio.to_thread(run_openai_normalization),
+                timeout=120,
+            )
+            normalized_text = getattr(normalized_response, "output_text", None)
+            if normalized_text:
+                extract_json_array(str(normalized_text))
+                logger.info("OpenAI web-search response normalized into JSON successfully")
+                return str(normalized_text)
+            raise ValueError("OpenAI JSON normalization returned an empty response")
         raise ValueError("OpenAI returned an empty response")
     except Exception as exc:
         logger.error(f"OpenAI fallback failed: {type(exc).__name__}: {exc}")
@@ -1904,13 +1944,38 @@ Output ONLY a valid JSON array (no markdown, no ```json wrapper):
                     if search_id:
                         update_search_status(search_id, result_message, progress_pct)
             except json.JSONDecodeError as e:
-                logger.warning(f"⚠️ Batch {batch_idx}: Gemini returned invalid JSON; trying OpenAI recovery...")
+                preferred_provider = os.getenv("JOB_SEARCH_PROVIDER", "openai").strip().lower()
+                recovery_provider = "gemini" if preferred_provider == "openai" else "openai"
+                logger.warning(
+                    "Batch %s: %s response was not parseable (%s characters); trying %s recovery",
+                    batch_idx,
+                    preferred_provider,
+                    len(response),
+                    recovery_provider,
+                )
                 recovered_jobs: List[Dict[str, Any]] = []
-                openai_response = await call_openai_fallback(instructions, prompt, use_google_search=True)
-                if openai_response:
+                if recovery_provider == "gemini":
+                    try:
+                        recovery_response = await call_gemini_with_retry(
+                            instructions,
+                            prompt,
+                            use_google_search=True,
+                            max_retries=3,
+                            initial_delay=5,
+                        )
+                    except HTTPException:
+                        recovery_response = None
+                else:
+                    recovery_response = await call_openai_fallback(
+                        instructions,
+                        prompt,
+                        use_google_search=True,
+                        model=os.getenv("OPENAI_SEARCH_MODEL", "gpt-4o"),
+                    )
+                if recovery_response:
                     try:
                         recovered_jobs = [
-                            job for job in extract_json_array(openai_response)
+                            job for job in extract_json_array(recovery_response)
                             if isinstance(job, dict)
                         ]
                     except json.JSONDecodeError:
