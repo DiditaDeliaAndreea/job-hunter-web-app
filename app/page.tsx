@@ -616,7 +616,7 @@ export default function Home() {
   const verificationCounts = jobs
     .filter((job) => job.Applied !== 'Yes')
     .reduce<Record<string, number>>((counts, job) => {
-    const status = job['Verification Status'] || 'Not verified';
+    const status = job['Verification Status'] || job.Status || 'Not verified';
     counts[status] = (counts[status] || 0) + 1;
     return counts;
     }, {});

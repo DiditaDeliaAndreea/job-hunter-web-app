@@ -28,7 +28,7 @@ from openpyxl import Workbook
 # Import CSV utilities
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.csv_utils import append_jobs_to_csv, dismiss_expired_jobs_in_csv, dismiss_job_in_csv, import_jobs_from_csv, import_local_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
+from utils.csv_utils import append_jobs_to_csv, dismiss_expired_jobs_in_csv, dismiss_job_in_csv, export_jobs_to_csv, import_jobs_from_csv, import_local_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
 from utils import firebase_utils
 from utils.hybrid_search import search_jobs as hybrid_search_jobs
 
@@ -151,6 +151,8 @@ JOB_FIELDS = [
     "Verification Status",
     "Verification Notes",
     "Last Verified",
+    "First Seen Date",
+    "Is Actively Recruiting",
     "Extracted Skills",
     "Required Experience Years",
     "Required Experience Areas",
@@ -239,6 +241,29 @@ def is_expired_listing_text(text: str | None) -> bool:
     return any(marker in normalized for marker in expired_markers)
 
 
+def mark_stale_jobs_expired(jobs: List[Dict[str, Any]], stale_after_days: int = 21) -> bool:
+    """Mark listings stale when their first-seen date has not been refreshed."""
+    today = date.today()
+    changed = False
+    for job in jobs:
+        if str(job.get("User Status Override") or "").strip().lower() == "yes":
+            continue
+        if str(job.get("Verification Status") or "").strip().casefold() == "expired":
+            continue
+        try:
+            first_seen = date.fromisoformat(str(job.get("First Seen Date") or "").strip())
+        except ValueError:
+            job["First Seen Date"] = today.isoformat()
+            changed = True
+            continue
+        if (today - first_seen).days > stale_after_days:
+            job["Status"] = "Expired"
+            job["Verification Status"] = "Expired"
+            job["Verification Notes"] = f"Automatically marked stale after {stale_after_days} days without a source update."
+            changed = True
+    return changed
+
+
 def normalize_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
     """Keep only jobs with usable listing URLs and return the canonical CSV shape."""
     description = str(job.get("Job Description") or "").strip()
@@ -285,6 +310,11 @@ def normalize_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
     )
     nice_to_have = normalize_list(job.get("Nice To Have") or job.get("nice_to_have"))
     seniority_level = str(job.get("Seniority Level") or job.get("seniority_level") or "Not specified").strip()
+    listing_status = str(job.get("Status") or "").strip().casefold()
+    if listing_status in {"expired", "closed", "inactive", "not active"}:
+        return None
+    normalized_status = "Active" if listing_status in {"", "not specified", "open", "active"} else str(job.get("Status")).strip()
+    first_seen_date = str(job.get("First Seen Date") or date.today().isoformat()).strip()
     embedding_text = " | ".join(
         value for value in (
             str(job.get("Job Title") or "").strip(),
@@ -306,6 +336,9 @@ def normalize_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
         "Original Listing URL": source_url,
         "URL Check Status": "Not checked",
         "Working Type": working_type_map.get(working_type, "Not specified"),
+        "Status": normalized_status,
+        "First Seen Date": first_seen_date,
+        "Is Actively Recruiting": str(job.get("Is Actively Recruiting") or "Unknown").strip(),
         "Extracted Skills": extracted_skills,
         "Required Experience Years": str(
             job.get("Required Experience Years") or job.get("required_experience_years") or "Not specified"
@@ -1966,6 +1999,9 @@ async def get_jobs(current_user: Dict[str, Any] = Depends(get_current_user)) -> 
     """
     try:
         jobs = import_jobs_from_csv("job_matches.csv", current_user["uid"])
+        stale_after_days = max(14, int(os.getenv("STALE_JOB_DAYS", "21")))
+        if mark_stale_jobs_expired(jobs, stale_after_days):
+            export_jobs_to_csv(jobs, "job_matches.csv", user_id=current_user["uid"])
         jobs = [job for job in jobs if job.get("User Dismissed", "").lower() != "yes"]
         
         if not jobs:
@@ -2079,12 +2115,20 @@ async def submit_match_feedback(
     fit_score: str = Form(""),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    allowed_feedback = {"good_match", "poor_match", "irrelevant", "too_senior", "wrong_tech_stack", "wrong_location"}
+    allowed_feedback = {"good_match", "poor_match", "irrelevant", "job_expired", "invalid_listing", "too_senior", "wrong_tech_stack", "wrong_location"}
     if feedback_type not in allowed_feedback:
         raise HTTPException(status_code=400, detail="Unsupported feedback type")
     record = firebase_utils.save_match_feedback(
         current_user["uid"], job_title, company, feedback_type, notes, fit_score
     )
+    if feedback_type in {"job_expired", "invalid_listing"}:
+        update_job_status_in_csv(
+            job_title,
+            company,
+            "Expired",
+            "job_matches.csv",
+            current_user["uid"],
+        )
     return JSONResponse({"feedback": record})
 
 

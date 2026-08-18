@@ -2,6 +2,7 @@ from utils.hybrid_search import search_jobs
 import api.index as api
 import json
 import pytest
+from datetime import date, timedelta
 
 
 def test_hybrid_search_matches_exact_terms_without_embeddings(monkeypatch):
@@ -61,3 +62,17 @@ async def test_reranker_orders_jobs_by_match_score(monkeypatch):
 
     assert results[0]["Job Title"] == "Second"
     assert results[0]["Fit Score (%)"] == "92%"
+
+
+def test_stale_jobs_are_marked_expired_but_user_overrides_are_preserved():
+    stale_date = (date.today() - timedelta(days=22)).isoformat()
+    jobs = [
+        {"Job Title": "Stale", "First Seen Date": stale_date, "Status": "Active"},
+        {"Job Title": "Override", "First Seen Date": stale_date, "User Status Override": "Yes", "Status": "Active"},
+    ]
+
+    changed = api.mark_stale_jobs_expired(jobs, stale_after_days=21)
+
+    assert changed is True
+    assert jobs[0]["Verification Status"] == "Expired"
+    assert jobs[1]["Status"] == "Active"

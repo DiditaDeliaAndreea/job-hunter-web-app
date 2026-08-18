@@ -2,6 +2,7 @@
 
 import csv
 import logging
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -37,6 +38,8 @@ CSV_FIELDS = [
     "Verification Status",
     "Verification Notes",
     "Last Verified",
+    "First Seen Date",
+    "Is Actively Recruiting",
 ]
 
 
@@ -45,6 +48,8 @@ def normalize_csv_job(job: Dict[str, Any]) -> Dict[str, Any]:
     normalized = {field: job.get(field) or "Not specified" for field in CSV_FIELDS}
     normalized["URL"] = job.get("URL") or "Not specified"
     normalized["Original Listing URL"] = job.get("Original Listing URL") or normalized["URL"]
+    normalized["First Seen Date"] = job.get("First Seen Date") or date.today().isoformat()
+    normalized["Is Actively Recruiting"] = job.get("Is Actively Recruiting") or "Unknown"
     return normalized
 
 
