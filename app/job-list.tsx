@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowUpRight, BriefcaseBusiness, CheckCircle2, ExternalLink, Filter, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowUpRight, BriefcaseBusiness, CheckCircle2, ExternalLink, Filter, RefreshCw, ThumbsDown, ThumbsUp, Trash2 } from 'lucide-react'
 import { apiFetch } from '../lib/api'
 import { readCachedJobs, writeCachedJobs } from '../lib/client-cache'
 
@@ -44,16 +44,18 @@ export default function JobList({ applied }: { applied: boolean }) {
   const [jobSort, setJobSort] = useState('fit-score-desc')
   const [hideExpired, setHideExpired] = useState(true)
   const [dismissingExpired, setDismissingExpired] = useState(false)
+  const [feedbackSent, setFeedbackSent] = useState<Record<string, string>>({})
 
   const loadJobs = async () => {
     if (jobs.length === 0) setLoading(true)
     setError('')
     try {
-      const response = await apiFetch('/api/jobs', { cache: 'no-store' })
+      const searchQuery = jobFilter.trim()
+      const response = await apiFetch(searchQuery ? `/api/jobs/search?q=${encodeURIComponent(searchQuery)}` : '/api/jobs', { cache: 'no-store' })
       const data = await response.json()
       if (!response.ok) throw new Error(data?.detail || 'Could not load jobs.')
       const savedJobs = Array.isArray(data.jobs) ? data.jobs as Job[] : []
-      writeCachedJobs(savedJobs)
+      if (!searchQuery) writeCachedJobs(savedJobs)
       setJobs(savedJobs.map((job, index) => ({ job, index })).filter(({ job }) => (job.Applied === 'Yes') === applied))
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Could not load jobs.')
@@ -62,7 +64,7 @@ export default function JobList({ applied }: { applied: boolean }) {
     }
   }
 
-  useEffect(() => { void loadJobs() }, [applied])
+  useEffect(() => { void loadJobs() }, [applied, jobFilter])
 
   const verifyJobs = async () => {
     setVerifying(true)
@@ -130,6 +132,22 @@ export default function JobList({ applied }: { applied: boolean }) {
       writeCachedJobs(cachedJobs)
     } catch (dismissError) {
       setError(dismissError instanceof Error ? dismissError.message : 'Could not remove this job.')
+    }
+  }
+
+  const submitMatchFeedback = async (job: Job, feedbackType: string) => {
+    const feedbackKey = `${job['Job Title'] || ''}-${job.Company || ''}`
+    const formData = new FormData()
+    formData.append('job_title', job['Job Title'] || '')
+    formData.append('company', job.Company || '')
+    formData.append('feedback_type', feedbackType)
+    formData.append('fit_score', job['Fit Score (%)'] || '')
+    try {
+      const response = await apiFetch('/api/jobs/feedback', { method: 'POST', body: formData })
+      if (!response.ok) throw new Error('Could not save feedback.')
+      setFeedbackSent((current) => ({ ...current, [feedbackKey]: feedbackType }))
+    } catch (feedbackError) {
+      setError(feedbackError instanceof Error ? feedbackError.message : 'Could not save feedback.')
     }
   }
 
@@ -298,7 +316,7 @@ export default function JobList({ applied }: { applied: boolean }) {
                     </div>
                     <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
                       <span className="truncate text-xs text-slate-500">{job['Working Type'] || 'Working type not specified'}</span>
-                      <div className="flex shrink-0 items-center gap-2"><Link href={`/jobs/${index}`} className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700">Details <ArrowUpRight className="h-3.5 w-3.5" /></Link>{job.URL && /^https?:\/\//i.test(job.URL) && <a href={job.URL} target="_blank" rel="noreferrer" className="rounded-md border border-slate-300 p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-700" title="Open listing"><ExternalLink className="h-4 w-4" /></a>}{!applied && <button type="button" onClick={() => void dismissJob(job)} className="rounded-md border border-red-200 p-2 text-red-600 hover:bg-red-50" title="Remove job" aria-label={`Remove ${job['Job Title'] || 'job'}`}><Trash2 className="h-4 w-4" /></button>}</div>
+                      <div className="flex shrink-0 items-center gap-2"><button type="button" onClick={() => void submitMatchFeedback(job, 'good_match')} className={`rounded-md border p-2 ${feedbackSent[`${job['Job Title'] || ''}-${job.Company || ''}`] === 'good_match' ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-slate-300 text-slate-500 hover:bg-slate-100'}`} title="Good match" aria-label="Good match"><ThumbsUp className="h-4 w-4" /></button><button type="button" onClick={() => void submitMatchFeedback(job, 'poor_match')} className={`rounded-md border p-2 ${feedbackSent[`${job['Job Title'] || ''}-${job.Company || ''}`] === 'poor_match' ? 'border-red-300 bg-red-50 text-red-700' : 'border-slate-300 text-slate-500 hover:bg-slate-100'}`} title="Poor match" aria-label="Poor match"><ThumbsDown className="h-4 w-4" /></button><Link href={`/jobs/${index}`} className="inline-flex items-center gap-1 rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700">Details <ArrowUpRight className="h-3.5 w-3.5" /></Link>{job.URL && /^https?:\/\//i.test(job.URL) && <a href={job.URL} target="_blank" rel="noreferrer" className="rounded-md border border-slate-300 p-2 text-slate-500 hover:bg-slate-100 hover:text-blue-700" title="Open listing"><ExternalLink className="h-4 w-4" /></a>}{!applied && <button type="button" onClick={() => void dismissJob(job)} className="rounded-md border border-red-200 p-2 text-red-600 hover:bg-red-50" title="Remove job" aria-label={`Remove ${job['Job Title'] || 'job'}`}><Trash2 className="h-4 w-4" /></button>}</div>
                     </div>
                   </article>
                 )

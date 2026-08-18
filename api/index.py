@@ -30,6 +30,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.csv_utils import append_jobs_to_csv, dismiss_expired_jobs_in_csv, dismiss_job_in_csv, import_jobs_from_csv, import_local_jobs_from_csv, update_job_applied_in_csv, update_job_status_in_csv, update_job_url_in_csv
 from utils import firebase_utils
+from utils.hybrid_search import search_jobs as hybrid_search_jobs
 
 # Configure logging
 logging.basicConfig(
@@ -123,6 +124,7 @@ ACTIVE_SEARCHES: Dict[str, Dict[str, Any]] = {}
 CV_PROFILE_CACHE: Dict[str, str] = {}
 CV_ANALYSIS_CONCURRENCY = 2
 SEARCH_LOG_LIMIT = 25
+SEARCH_RESULT_CACHE: Dict[tuple[str, str, str, bool], tuple[float, List[Dict[str, Any]]]] = {}
 JOB_FIELDS = [
     "Job Title",
     "Company",
@@ -149,6 +151,13 @@ JOB_FIELDS = [
     "Verification Status",
     "Verification Notes",
     "Last Verified",
+    "Extracted Skills",
+    "Required Experience Years",
+    "Required Experience Areas",
+    "Seniority Level",
+    "Must Have Requirements",
+    "Nice To Have",
+    "Embedding Text",
 ]
 
 
@@ -262,6 +271,32 @@ def normalize_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
         "on site": "On-site",
     }
 
+    def normalize_list(value: Any) -> str:
+        if isinstance(value, list):
+            return "; ".join(str(item).strip() for item in value if str(item).strip()) or "Not specified"
+        return str(value or "Not specified").strip()
+
+    extracted_skills = normalize_list(job.get("Extracted Skills") or job.get("extracted_skills"))
+    required_experience_areas = normalize_list(
+        job.get("Required Experience Areas") or job.get("required_experience_areas")
+    )
+    must_have_requirements = normalize_list(
+        job.get("Must Have Requirements") or job.get("must_have_requirements")
+    )
+    nice_to_have = normalize_list(job.get("Nice To Have") or job.get("nice_to_have"))
+    seniority_level = str(job.get("Seniority Level") or job.get("seniority_level") or "Not specified").strip()
+    embedding_text = " | ".join(
+        value for value in (
+            str(job.get("Job Title") or "").strip(),
+            extracted_skills,
+            required_experience_areas,
+            seniority_level,
+            must_have_requirements,
+            nice_to_have,
+            description,
+        ) if value and value != "Not specified"
+    )
+
     return {
         field: str(job.get(field) or "Not specified").strip()
         for field in JOB_FIELDS
@@ -271,6 +306,15 @@ def normalize_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
         "Original Listing URL": source_url,
         "URL Check Status": "Not checked",
         "Working Type": working_type_map.get(working_type, "Not specified"),
+        "Extracted Skills": extracted_skills,
+        "Required Experience Years": str(
+            job.get("Required Experience Years") or job.get("required_experience_years") or "Not specified"
+        ).strip(),
+        "Required Experience Areas": required_experience_areas,
+        "Seniority Level": seniority_level,
+        "Must Have Requirements": must_have_requirements,
+        "Nice To Have": nice_to_have,
+        "Embedding Text": embedding_text,
     }
 
 
@@ -1054,6 +1098,10 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     - matching_roles: array of likely job titles or role families that fit the candidate
     - languages: array of spoken or written languages explicitly mentioned in the CV (e.g., Romanian, English, Irish)
     - location: string for the candidate's current or target location if mentioned (e.g., "Dublin, Ireland")
+    - years_of_experience: number when supported by explicit CV dates, otherwise null
+    - primary_specializations: array of 2-5 evidence-based specializations
+    - preferences: object with remote_or_hybrid, salary_expectation, and preferred_seniority keys; use null when absent
+    - embedding_text: concise normalized text containing roles, skills, responsibilities, seniority, industries, and preferences
 
     Use evidence from the CV. Keep the output valid JSON with no markdown wrapper.
     """
@@ -1518,6 +1566,13 @@ Output ONLY a valid JSON array (no markdown, no ```json wrapper):
     "Match Reasons": "2-4 sentences on genuine overlaps",
     "Missing Requirements": "Bullet list of unmet hard requirements, or None identified",
     "Job Description": "Complete job description copied verbatim from the original listing",
+    "Extracted Skills": ["Hard skills, tools, frameworks, and certifications found in the listing"],
+    "Required Experience Years": "Required years or Not specified",
+    "Required Experience Areas": ["Core areas of required experience"],
+    "Seniority Level": "Entry, Mid, Senior, Lead, Manager, or Not specified",
+    "Must Have Requirements": ["Hard requirements that can disqualify a candidate"],
+    "Nice To Have": ["Preferred but non-blocking qualifications"],
+    "Embedding Text": "Concise normalized text combining title, skills, seniority, requirements, and responsibilities",
     "Recommended CV": "Exact uploaded CV filename",
     "CV Tailoring Recommendation": "Specific changes or emphasis for this job",
     "Status": "Active",
@@ -1931,6 +1986,106 @@ async def get_jobs(current_user: Dict[str, Any] = Depends(get_current_user)) -> 
             status_code=500,
             detail="Failed to fetch jobs from database"
         )
+
+
+async def rerank_jobs_with_gemini(profile: str, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rerank a small retrieved pool while retaining the original jobs on failure."""
+    candidates = jobs[:10]
+    candidate_text = "\n\n".join(
+        f"JOB {index}: {job.get('Job Title', 'Not specified')} at {job.get('Company', 'Not specified')}\n"
+        f"Skills: {job.get('Extracted Skills', 'Not specified')}\n"
+        f"Requirements: {job.get('Must Have Requirements', job.get('Missing Requirements', 'Not specified'))}\n"
+        f"Description: {job.get('Job Description', 'Not specified')}"
+        for index, job in enumerate(candidates)
+    )
+    instructions = """
+You are a strict technical recruiting reranker. Compare the candidate profile to each job.
+Return ONLY a JSON array with one object per candidate, using the candidate's JOB number:
+[{"job_index": 0, "match_score": 0, "why_match": "", "skill_gaps": [""]}]
+Use a 0-100 score. Cite genuine overlaps, identify concrete missing hard requirements, and never
+infer experience that is not supported by the candidate profile.
+"""
+    prompt = f"CANDIDATE PROFILE:\n{profile[:12000]}\n\nRETRIEVED JOBS:\n{candidate_text}"
+    try:
+        response = await call_gemini_with_retry(instructions, prompt, use_google_search=False, max_retries=2, initial_delay=2)
+        rankings = extract_json_array(response)
+    except Exception as exc:
+        logger.warning("Job reranking unavailable; retaining hybrid retrieval order: %s", type(exc).__name__)
+        return jobs
+
+    ranking_map = {
+        int(item["job_index"]): item
+        for item in rankings
+        if isinstance(item, dict) and str(item.get("job_index", "")).isdigit()
+        and 0 <= int(item["job_index"]) < len(candidates)
+    }
+    reranked = []
+    scored_indexes = set()
+    for index, job in enumerate(candidates):
+        ranking = ranking_map.get(index)
+        if ranking:
+            enriched_job = dict(job)
+            raw_score = str(ranking.get("match_score", 0)).replace("%", "").strip()
+            try:
+                match_score = int(float(raw_score))
+            except ValueError:
+                match_score = 0
+            enriched_job["Fit Score (%)"] = f"{max(0, min(100, match_score))}%"
+            enriched_job["Match Reasons"] = str(ranking.get("why_match") or "Not specified")
+            enriched_job["Missing Requirements"] = "; ".join(
+                str(gap).strip() for gap in ranking.get("skill_gaps", []) if str(gap).strip()
+            ) or "None identified"
+            reranked.append((match_score, enriched_job))
+            scored_indexes.add(index)
+    reranked.sort(key=lambda item: item[0], reverse=True)
+    ordered_jobs = [job for _, job in reranked]
+    ordered_jobs.extend(job for index, job in enumerate(candidates) if index not in scored_indexes)
+    return ordered_jobs + jobs[10:]
+
+
+@app.get("/api/jobs/search")
+async def search_saved_jobs(
+    q: str = "",
+    limit: int = 50,
+    profile: str = "",
+    rerank: bool = False,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Retrieve a broad hybrid pool and optionally rerank its top candidates with Gemini."""
+    jobs = [
+        job for job in import_jobs_from_csv("job_matches.csv", current_user["uid"])
+        if job.get("User Dismissed", "").lower() != "yes"
+    ]
+    bounded_limit = max(1, min(limit, 100))
+    cache_key = (current_user["uid"], q.strip(), profile.strip(), rerank)
+    cache_ttl = max(60, int(os.getenv("SEARCH_RESULTS_CACHE_TTL_SECONDS", "21600")))
+    cached = SEARCH_RESULT_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < cache_ttl:
+        return JSONResponse({"jobs": cached[1][:bounded_limit], "total": len(jobs), "cached": True})
+    retrieval_limit = min(max(bounded_limit, 50), 100)
+    retrieved_jobs = hybrid_search_jobs(jobs, q, retrieval_limit)
+    if rerank and profile.strip() and retrieved_jobs:
+        retrieved_jobs = await rerank_jobs_with_gemini(profile, retrieved_jobs)
+    SEARCH_RESULT_CACHE[cache_key] = (time.time(), retrieved_jobs)
+    return JSONResponse({"jobs": retrieved_jobs[:bounded_limit], "total": len(jobs)})
+
+
+@app.post("/api/jobs/feedback")
+async def submit_match_feedback(
+    job_title: str = Form(...),
+    company: str = Form(""),
+    feedback_type: str = Form(...),
+    notes: str = Form(""),
+    fit_score: str = Form(""),
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    allowed_feedback = {"good_match", "poor_match", "irrelevant", "too_senior", "wrong_tech_stack", "wrong_location"}
+    if feedback_type not in allowed_feedback:
+        raise HTTPException(status_code=400, detail="Unsupported feedback type")
+    record = firebase_utils.save_match_feedback(
+        current_user["uid"], job_title, company, feedback_type, notes, fit_score
+    )
+    return JSONResponse({"feedback": record})
 
 
 @app.get("/api/preferences/roles")

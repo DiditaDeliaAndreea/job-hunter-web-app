@@ -245,6 +245,28 @@ def fetch_prompt_preferences(user_id: str, limit: int = 12) -> List[Dict[str, An
     return sorted(records, key=lambda record: str(record.get("created_at", "")), reverse=True)[:limit]
 
 
+def save_match_feedback(
+    user_id: str,
+    job_title: str,
+    company: str,
+    feedback_type: str,
+    notes: str = "",
+    fit_score: str = "",
+) -> Dict[str, Any]:
+    feedback_id = uuid.uuid4().hex
+    record = {
+        "id": feedback_id,
+        "job_title": job_title.strip(),
+        "company": company.strip(),
+        "feedback_type": feedback_type,
+        "notes": notes.strip()[:1000],
+        "fit_score": fit_score.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _get_database().collection("users").document(user_id).collection("match_feedback").document(feedback_id).set(record)
+    return record
+
+
 def fetch_role_preferences(user_id: str) -> Dict[str, Any]:
     document = _get_database().collection("users").document(user_id).collection("preferences").document("roles").get()
     data = document.to_dict() or {}
