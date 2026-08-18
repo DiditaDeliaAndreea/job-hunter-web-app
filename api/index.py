@@ -1920,10 +1920,47 @@ Output ONLY a valid JSON array (no markdown, no ```json wrapper):
             try:
                 batch_jobs = extract_json_array(response)
                 if isinstance(batch_jobs, list):
-                    valid_jobs = [normalize_job(job) for job in batch_jobs if isinstance(job, dict)]
-                    valid_jobs = [job for job in valid_jobs if job is not None]
-                    valid_jobs = await validate_listing_urls(valid_jobs)
+                    parsed_count = len(batch_jobs)
+                    normalized_jobs = [normalize_job(job) for job in batch_jobs if isinstance(job, dict)]
+                    normalized_jobs = [job for job in normalized_jobs if job is not None]
+                    normalized_count = len(normalized_jobs)
+                    valid_jobs = await validate_listing_urls(normalized_jobs)
+                    url_validated_count = len(valid_jobs)
                     valid_jobs = keep_new_jobs(valid_jobs)
+                    duplicate_count = url_validated_count - len(valid_jobs)
+
+                    if not valid_jobs:
+                        preferred_provider = os.getenv("JOB_SEARCH_PROVIDER", "openai").strip().lower()
+                        recovery_provider = "gemini" if preferred_provider == "openai" else "openai"
+                        update_search_status(
+                            search_id,
+                            f"Batch {batch_idx}: {parsed_count} parsed, {normalized_count} passed content checks, "
+                            f"{url_validated_count} passed listing checks, {duplicate_count} duplicates; "
+                            f"trying {recovery_provider} recovery...",
+                            progress_pct,
+                        ) if search_id else None
+                        recovery_response = None
+                        if recovery_provider == "gemini":
+                            try:
+                                recovery_response = await call_gemini_with_retry(
+                                    instructions, prompt, use_google_search=True, max_retries=3, initial_delay=5
+                                )
+                            except HTTPException:
+                                recovery_response = None
+                        else:
+                            recovery_response = await call_openai_fallback(
+                                instructions, prompt, use_google_search=True,
+                                model=os.getenv("OPENAI_SEARCH_MODEL", "gpt-4o"),
+                            )
+                        if recovery_response:
+                            try:
+                                recovered_jobs = extract_json_array(recovery_response)
+                            except json.JSONDecodeError:
+                                recovered_jobs = []
+                            recovered_normalized = [normalize_job(job) for job in recovered_jobs if isinstance(job, dict)]
+                            recovered_normalized = [job for job in recovered_normalized if job is not None]
+                            recovered_validated = await validate_listing_urls(recovered_normalized)
+                            valid_jobs = keep_new_jobs(recovered_validated)
                     all_jobs.extend(valid_jobs)
                     if len(valid_jobs) > 0:
                         if user_id:
@@ -1933,7 +1970,11 @@ Output ONLY a valid JSON array (no markdown, no ```json wrapper):
                         result_message = f"Batch {batch_idx}: found {len(valid_jobs)} jobs and saved them to CSV."
                         logger.info(f"✅ {result_message}")
                     else:
-                        result_message = f"Batch {batch_idx}: no valid jobs returned by the AI response."
+                        result_message = (
+                            f"Batch {batch_idx}: no usable jobs after provider and listing checks "
+                            f"({parsed_count} parsed, {normalized_count} passed content checks, "
+                            f"{url_validated_count} passed listing checks, {duplicate_count} duplicates)."
+                        )
                         logger.info(f"ℹ️ {result_message}")
 
                     if search_id:
