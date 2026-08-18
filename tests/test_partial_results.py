@@ -8,6 +8,15 @@ from fastapi import HTTPException
 import api.index as api
 
 
+def test_technical_manager_search_expands_to_adjacent_management_roles():
+    roles = api.build_search_roles(["Technical Manager"], [], [])
+
+    assert "Technical Manager" in roles
+    assert "IT Manager" in roles
+    assert "Technology Manager" in roles
+    assert "Technical Operations Manager" in roles
+
+
 @pytest.mark.asyncio
 async def test_call_gemini_uses_google_search_tool_when_requested(monkeypatch):
     class FakeClient:

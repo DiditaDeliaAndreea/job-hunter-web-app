@@ -438,6 +438,8 @@ ROLE_VARIANT_MAP = {
     "test engineer": ["Software Test Engineer", "Test Automation Engineer", "QA Engineer", "Quality Assurance Engineer", "Software QA Engineer"],
     "ai support": ["AI Support Specialist", "AI Support Engineer", "AI Operations Analyst", "AI Operations Specialist", "Generative AI Support Specialist"],
     "product support": ["Product Support Engineer", "Product Support Specialist", "Customer Support Engineer", "Technical Support Engineer"],
+    "technical manager": ["Technical Manager", "IT Manager", "Technology Manager", "Technical Operations Manager", "Technical Support Manager", "Systems Manager", "Service Delivery Manager", "Technical Project Manager"],
+    "technology manager": ["Technology Manager", "IT Manager", "Technical Manager", "Technical Operations Manager", "Systems Manager", "Service Delivery Manager"],
 }
 
 
@@ -1032,24 +1034,7 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     
     location_context = f"in {TARGET_LOCATION}" if TARGET_LOCATION else "in their target market"
     instructions = f"""
-<<<<<<< HEAD
-    You are an expert technical recruiter matching candidates for roles {location_context}.
-
-    Analyze the provided resume and synthesize a detailed candidate profile:
-    1. Core technical skills & primary tech stack
-    2. Seniority level & total years of experience
-    3. Key strengths and specializations (e.g., QA testing, AI operations, triage)
-    4. Target role keywords that align with the candidate
-    5. Candidate's current or target work location — extract this from the CV address, city, or
-       any stated relocation/remote preference. State it explicitly as "Location: <city, country>"
-       on its own line so it can be used for job search targeting.
-
-    Be specific and detailed to help with job matching accuracy.
-    """
-
-    prompt = f"Analyze this CV and create a detailed candidate profile for job matching:\n\n{cv_text}"
-=======
-    You are an expert technical recruiter matching candidates for roles in {TARGET_LOCATION}.
+    You are an expert technical recruiter matching candidates for roles in {location_context}.
 
     Analyze the provided resume and return strict JSON only.
     Required keys:
@@ -1058,12 +1043,12 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
     - strengths: array of candidate specializations (e.g., QA testing, AI operations, triage)
     - matching_roles: array of likely job titles or role families that fit the candidate
     - languages: array of spoken or written languages explicitly mentioned in the CV (e.g., Romanian, English, Irish)
+    - location: string for the candidate's current or target location if mentioned (e.g., "Dublin, Ireland")
 
     Use evidence from the CV. Keep the output valid JSON with no markdown wrapper.
     """
 
-    prompt = f"Analyze this CV and create a detailed candidate profile for {TARGET_LOCATION} job matching:\n\n{cv_text}"
->>>>>>> c83e656 (fix: broaden job search matching)
+    prompt = f"Analyze this CV and create a detailed candidate profile for {location_context} job matching:\n\n{cv_text}"
     
     response = await call_gemini_with_retry(
         instructions,
@@ -1402,16 +1387,16 @@ async def run_incremental_job_finder(
                 f"Waiting for Gemini and Google Search results for batch {batch_idx}/{len(roles_batches)}...",
                 progress_pct,
             )
-        
-location_str = target_location.strip() or TARGET_LOCATION or "the location stated in the candidate's profile above"
-language_signals = extract_cv_languages(cv_summary)
-language_hint = (
-    f" Language signals from the CV: {', '.join(language_signals)}. Include relevant bilingual language requirements when they align with the candidate profile."
-    if language_signals
-    else ""
-)
+        try:
+            location_str = target_location.strip() or TARGET_LOCATION or "the location stated in the candidate's profile above"
+            language_signals = extract_cv_languages(cv_summary)
+            language_hint = (
+                f" Language signals from the CV: {', '.join(language_signals)}. Include relevant bilingual language requirements when they align with the candidate profile."
+                if language_signals
+                else ""
+            )
 
-instructions = f"""
+            instructions = f"""
 You are an automated career matching agent using Google Search.
 
 Search for ACTIVE open job listings specifically in **{location_str}** and across Irish hiring boards relevant to Dublin and Ireland, including IrishJobs, Jobs.ie, MCS Group, Sigmar Recruitment, Morgan McKinley, LinkedIn, Indeed, Greenhouse, Workday, and similar board sources.
@@ -1538,16 +1523,14 @@ Output ONLY a valid JSON array (no markdown, no ```json wrapper):
 ]
 """
 
-prompt = (
-    f"Search Google for job listings in {location_str} and Ireland for these role signals: {batch_roles_str}. "
-    f"Look across relevant Irish job boards and employer pages, not only exact-title searches. "
-    f"Only include jobs posted in the last {max_posting_age_days} days. "
-    f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
-    f"Do not return any title/company pair already present in the complete saved-job ledger included in your instructions. "
-    f"Match them against this candidate profile and score strictly using the rubric in your instructions:\n{cv_summary}{language_hint}"
-)
-        
-        try:
+            prompt = (
+                f"Search Google for job listings in {location_str} and Ireland for these role signals: {batch_roles_str}. "
+                f"Look across relevant Irish job boards and employer pages, not only exact-title searches. "
+                f"Only include jobs posted in the last {max_posting_age_days} days. "
+                f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
+                f"Do not return any title/company pair already present in the complete saved-job ledger included in your instructions. "
+                f"Match them against this candidate profile and score strictly using the rubric in your instructions:\n{cv_summary}{language_hint}"
+            )
             response = await call_gemini_with_retry(
                 instructions,
                 prompt,
@@ -2050,4 +2033,3 @@ async def start_job_verification(current_user: Dict[str, Any] = Depends(get_curr
     }
     asyncio.create_task(run_saved_job_verification(verification_id, current_user["uid"]))
     return JSONResponse({"verification_id": verification_id, "status": "queued"})
-

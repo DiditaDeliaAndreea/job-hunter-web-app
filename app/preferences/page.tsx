@@ -6,8 +6,6 @@ import { apiFetch } from '../../lib/api'
 import { readCachedPreferences, writeCachedPreferences } from '../../lib/client-cache'
 import BackButton from '../back-button'
 
-const STORAGE_KEY = 'careermatch-role-preferences'
-
 export default function PreferencesPage() {
   const cachedPreferences = readCachedPreferences()
   const [targetRoles, setTargetRoles] = useState<string[]>(cachedPreferences?.targetRoles || [])
@@ -25,53 +23,23 @@ export default function PreferencesPage() {
 
   useEffect(() => {
     const loadPreferences = async () => {
-      const loadLocalPreferences = () => {
-        const saved = window.localStorage.getItem(STORAGE_KEY)
-        if (!saved) return null
-        try {
-          const preferences = JSON.parse(saved)
-          return {
-            targetRoles: parseRoles(preferences.targetRoles),
-            excludedRoles: parseRoles(preferences.excludedRoles),
-            targetLocation: typeof preferences.targetLocation === 'string' ? preferences.targetLocation : '',
-          }
-        } catch {
-          window.localStorage.removeItem(STORAGE_KEY)
-          return null
-        }
-      }
-
       try {
         const response = await apiFetch('/api/preferences/roles', { cache: 'no-store' })
         const preferences = await response.json()
         if (!response.ok) throw new Error(preferences?.detail || 'Could not load preferences.')
-        const remoteTargetRoles = Array.isArray(preferences.target_roles) ? preferences.target_roles : parseRoles(preferences.targetRoles)
-        const remoteExcludedRoles = Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles : parseRoles(preferences.excludedRoles)
-        const remoteLocation = typeof preferences.target_location === 'string' ? preferences.target_location : ''
-        const remoteMaxAge = typeof preferences.max_posting_age_days === 'number' ? preferences.max_posting_age_days : 7
-        const localPreferences = loadLocalPreferences()
-        const target = remoteTargetRoles.length ? remoteTargetRoles : localPreferences?.targetRoles || []
-        const excluded = remoteExcludedRoles.length ? remoteExcludedRoles : localPreferences?.excludedRoles || []
-        const location = remoteLocation || localPreferences?.targetLocation || ''
+
+        const target = Array.isArray(preferences.target_roles) ? preferences.target_roles : []
+        const excluded = Array.isArray(preferences.excluded_roles) ? preferences.excluded_roles : []
+        const location = typeof preferences.target_location === 'string' ? preferences.target_location : ''
+        const maxAge = typeof preferences.max_posting_age_days === 'number' ? preferences.max_posting_age_days : 7
+
         setTargetRoles(target)
         setExcludedRoles(excluded)
         setTargetLocation(location)
-        setMaxPostingAgeDays(remoteMaxAge)
+        setMaxPostingAgeDays(maxAge)
         writeCachedPreferences({ targetRoles: target, excludedRoles: excluded })
-        if ((!remoteTargetRoles.length && !remoteExcludedRoles.length) && (target.length || excluded.length)) {
-          const formData = new FormData()
-          formData.append('target_roles', target.join('\n'))
-          formData.append('excluded_roles', excluded.join('\n'))
-          formData.append('target_location', location)
-          await apiFetch('/api/preferences/roles', { method: 'PUT', body: formData })
-        }
-      } catch {
-        const localPreferences = loadLocalPreferences()
-        if (localPreferences) {
-          setTargetRoles(localPreferences.targetRoles)
-          setExcludedRoles(localPreferences.excludedRoles)
-          setTargetLocation(localPreferences.targetLocation)
-        }
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Could not load preferences.')
       }
     }
     void loadPreferences()
@@ -96,7 +64,6 @@ export default function PreferencesPage() {
     formData.append('max_posting_age_days', String(maxPostingAgeDays))
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(async (response) => {
       if (!response.ok) throw new Error('Could not save preferences.')
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ targetRoles: nextTargetRoles.join('\n'), excludedRoles: nextExcludedRoles.join('\n'), targetLocation: targetLocation.trim() }))
       writeCachedPreferences({ targetRoles: nextTargetRoles, excludedRoles: nextExcludedRoles })
       setMessage('Job preferences saved for future searches.')
     }).catch((error) => setMessage(error instanceof Error ? error.message : 'Could not save preferences.'))
@@ -111,7 +78,6 @@ export default function PreferencesPage() {
     setMaxPostingAgeDays(7)
     const formData = new FormData()
     void apiFetch('/api/preferences/roles', { method: 'PUT', body: formData }).then(() => {
-      window.localStorage.removeItem(STORAGE_KEY)
       writeCachedPreferences({ targetRoles: [], excludedRoles: [] })
       setMessage('Job preferences cleared.')
     }).catch(() => setMessage('Could not clear preferences.'))
