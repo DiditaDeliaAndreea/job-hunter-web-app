@@ -750,6 +750,12 @@ async def run_search_pipeline(
     reuse_cv_analysis: bool,
     user_id: str,
 ) -> None:
+    """
+    Main pipeline for analyzing CVs and finding jobs.
+
+    This function now merges roles from the search form with the user's saved
+    preferences from Firestore before starting the job search.
+    """
     prefs = firebase_utils.fetch_role_preferences(user_id)
     saved_location = prefs.get("target_location", "")
     max_posting_age_days = int(prefs.get("max_posting_age_days", 7))
@@ -807,7 +813,11 @@ async def run_search_pipeline(
             for filename, cv_summary in analyzed_cvs
         ]
 
-        expanded_target_roles = build_search_roles(target_roles, excluded_roles, cv_summaries)
+        # Combine submitted roles with saved preferences for a comprehensive search
+        final_target_roles = list(dict.fromkeys(target_roles + prefs.get("target_roles", [])))
+        final_excluded_roles = list(dict.fromkeys(excluded_roles + prefs.get("excluded_roles", [])))
+
+        expanded_target_roles = build_search_roles(final_target_roles, final_excluded_roles, cv_summaries)
         if expanded_target_roles:
             update_search_status(search_id, f"Expanded search to {len(expanded_target_roles)} related role signals based on the CV profile.", 55)
         combined_summary = "\n\n--- NEXT CV PROFILE ---\n\n".join(cv_summaries)
@@ -816,7 +826,7 @@ async def run_search_pipeline(
             combined_summary,
             search_id=search_id,
             target_roles=expanded_target_roles,
-            excluded_roles=excluded_roles,
+            excluded_roles=final_excluded_roles,
             cv_names=[filename for filename, _ in files],
             user_id=user_id,
             target_location=saved_location,

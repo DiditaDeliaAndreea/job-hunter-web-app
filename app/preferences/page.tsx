@@ -162,12 +162,12 @@ export default function PreferencesPage() {
         <div className="mt-8 grid w-full gap-8 md:grid-cols-2">
           <label className="flex min-h-[25rem] w-full flex-col rounded-2xl border border-slate-200 bg-white p-7 text-sm font-semibold text-slate-800 shadow-sm md:p-8">
             <span className="block text-base">Roles to look for</span>
-            <span className="mt-1 block font-normal text-slate-500">Add one role per line or separate roles with commas.</span>
+            <span className="mt-1 block font-normal text-slate-500">Roles saved here will be automatically included in every job search.</span>
             <RolePills roles={targetRoles} setRoles={setTargetRoles} input={targetInput} setInput={setTargetInput} placeholder="Type a role and press Enter" />
           </label>
           <label className="flex min-h-[25rem] w-full flex-col rounded-2xl border border-slate-200 bg-white p-7 text-sm font-semibold text-slate-800 shadow-sm md:p-8">
             <span className="block text-base">Roles to leave out</span>
-            <span className="mt-1 block font-normal text-slate-500">Add roles you do not want included in your results.</span>
+            <span className="mt-1 block font-normal text-slate-500">Roles saved here will be automatically excluded from every job search.</span>
             <RolePills roles={excludedRoles} setRoles={setExcludedRoles} input={excludedInput} setInput={setExcludedInput} placeholder="Type a role and press Enter" pillClassName="bg-red-50 text-red-700 hover:bg-red-100" removeClassName="text-red-400" />
           </label>
         </div>
