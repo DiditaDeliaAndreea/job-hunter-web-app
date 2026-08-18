@@ -76,3 +76,70 @@ def test_stale_jobs_are_marked_expired_but_user_overrides_are_preserved():
     assert changed is True
     assert jobs[0]["Verification Status"] == "Expired"
     assert jobs[1]["Status"] == "Active"
+
+
+def test_irishjobs_unavailable_page_is_detected_as_expired():
+    page_text = (
+        "#### Oh no, this job is no longer available. "
+        "But don't worry! We've searched for similar jobs for you."
+    )
+
+    assert api.is_expired_listing_text(page_text) is True
+
+
+def test_active_linkedin_listing_overrides_expired_aggregator(monkeypatch):
+    jobs = [{
+        "Job Title": "Technical Manager",
+        "Company": "ExampleCo",
+        "Verification Status": "Not verified",
+        "Verification Notes": "Not specified",
+        "Original Listing URL": "https://www.irishjobs.ie/job/123",
+        "URL": "https://www.irishjobs.ie/job/123",
+    }]
+    exported = []
+
+    monkeypatch.setattr(api, "import_jobs_from_csv", lambda filename, user_id: jobs)
+    monkeypatch.setattr(api, "export_jobs_to_csv", lambda rows, filename, user_id: exported.append(rows))
+    monkeypatch.setattr("utils.csv_utils.export_jobs_to_csv", lambda rows, filename, user_id: exported.append(rows))
+    monkeypatch.setattr(
+        api,
+        "_url_is_expired_sync",
+        lambda url: "irishjobs.ie" in url,
+    )
+
+    api.update_verification_rows([
+        {
+            "Job Title": "Technical Manager",
+            "Company": "ExampleCo",
+            "Verification Status": "Active",
+            "Official Listing URL": "https://www.linkedin.com/jobs/view/456",
+        }
+    ], "user-1")
+
+    assert jobs[0]["Verification Status"] == "Active"
+
+
+def test_expired_linkedin_listing_overrides_active_aggregator(monkeypatch):
+    jobs = [{
+        "Job Title": "Technical Manager",
+        "Company": "ExampleCo",
+        "Verification Status": "Not verified",
+        "Verification Notes": "Not specified",
+        "Original Listing URL": "https://www.linkedin.com/jobs/view/456",
+        "URL": "https://www.linkedin.com/jobs/view/456",
+    }]
+    monkeypatch.setattr(api, "import_jobs_from_csv", lambda filename, user_id: jobs)
+    monkeypatch.setattr(api, "export_jobs_to_csv", lambda rows, filename, user_id: None)
+    monkeypatch.setattr("utils.csv_utils.export_jobs_to_csv", lambda rows, filename, user_id: None)
+    monkeypatch.setattr(api, "_url_is_expired_sync", lambda url: "linkedin.com" in url)
+
+    api.update_verification_rows([
+        {
+            "Job Title": "Technical Manager",
+            "Company": "ExampleCo",
+            "Verification Status": "Active",
+            "Official Listing URL": "https://www.irishjobs.ie/job/123",
+        }
+    ], "user-1")
+
+    assert jobs[0]["Verification Status"] == "Expired"

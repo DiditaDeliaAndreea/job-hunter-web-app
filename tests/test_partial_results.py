@@ -77,7 +77,7 @@ async def test_partial_batch_results_are_persisted_before_error(monkeypatch):
         persisted.append(list(jobs))
         return str(filename)
 
-    monkeypatch.setattr(api, "call_gemini_with_retry", fake_call_gemini_with_retry)
+    monkeypatch.setattr(api, "call_job_search_model", fake_call_gemini_with_retry)
     monkeypatch.setattr(api, "append_jobs_to_csv", fake_append_jobs_to_csv)
 
     async def keep_fixture_jobs(jobs):

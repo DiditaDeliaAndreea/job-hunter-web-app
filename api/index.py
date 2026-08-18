@@ -11,6 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import date
 import urllib.error
+import urllib.parse
 import urllib.request
 from html import unescape
 from typing import Any, Dict, List
@@ -234,6 +235,14 @@ def is_expired_listing_text(text: str | None) -> bool:
         "position is no longer open",
         "this role is no longer available",
         "job is no longer available",
+        "oh no, this job is no longer available",
+        "oh no this job is no longer available",
+        "we've searched for similar jobs for you",
+        "we have searched for similar jobs for you",
+        "start a new search",
+        "this position has been filled",
+        "the position has been filled",
+        "applications for this role have closed",
         "this listing is no longer active",
         "expired listing",
         "application deadline has passed",
@@ -351,8 +360,117 @@ def normalize_job(job: Dict[str, Any]) -> Dict[str, Any] | None:
     }
 
 
+def _aggregator_request(url: str, headers: Dict[str, str] | None = None) -> Dict[str, Any]:
+    request = urllib.request.Request(url, headers=headers or {}, method="GET")
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _map_aggregator_job(raw_job: Dict[str, Any], source: str) -> Dict[str, Any]:
+    """Map Adzuna/JSearch records into the existing normalized job contract."""
+    if source == "adzuna":
+        title = raw_job.get("title") or "Not specified"
+        company = (raw_job.get("company") or {}).get("display_name") or "Not specified"
+        location = (raw_job.get("location") or {}).get("display_name") or "Not specified"
+        url = raw_job.get("redirect_url") or raw_job.get("url") or "Not specified"
+        description = raw_job.get("description") or "Not specified"
+        posted_date = raw_job.get("created") or "Not specified"
+        salary = "Not specified"
+        if raw_job.get("salary_min") or raw_job.get("salary_max"):
+            salary = f"{raw_job.get('salary_min', '')}-{raw_job.get('salary_max', '')}"
+    else:
+        title = raw_job.get("job_title") or "Not specified"
+        company = raw_job.get("employer_name") or "Not specified"
+        location = ", ".join(
+            value for value in (raw_job.get("job_city"), raw_job.get("job_state"), raw_job.get("job_country")) if value
+        ) or "Not specified"
+        url = raw_job.get("job_apply_link") or raw_job.get("job_google_link") or "Not specified"
+        description = raw_job.get("job_description") or "Not specified"
+        posted_date = raw_job.get("job_posted_at_datetime_utc") or raw_job.get("job_posted_at") or "Not specified"
+        salary = raw_job.get("job_min_salary") or raw_job.get("job_salary") or "Not specified"
+
+    return {
+        "Job Title": str(title),
+        "Company": str(company),
+        "Location": str(location),
+        "Posted Date": str(posted_date),
+        "Job Description": str(description),
+        "Salary": str(salary),
+        "URL": str(url),
+        "Original Listing URL": str(url),
+        "Listing Source": source.title(),
+        "Official Listing Verified": "No",
+        "Official Listing URL": "Not specified",
+        "Status": "Active",
+    }
+
+
+async def fetch_aggregator_jobs(
+    roles: List[str],
+    location: str,
+    max_posting_age_days: int,
+) -> List[Dict[str, Any]]:
+    """Fetch optional structured listings from Adzuna, JSearch, or both."""
+    providers = {
+        value.strip().lower()
+        for value in os.getenv("JOB_AGGREGATORS", "").split(",")
+        if value.strip()
+    } & {"adzuna", "jsearch"}
+    if not providers:
+        return []
+
+    async def fetch_provider(provider: str) -> List[Dict[str, Any]]:
+        try:
+            if provider == "adzuna":
+                app_id = os.getenv("ADZUNA_APP_ID")
+                app_key = os.getenv("ADZUNA_APP_KEY")
+                country = os.getenv("ADZUNA_COUNTRY", "ie")
+                if not app_id or not app_key:
+                    return []
+                results = []
+                for role in roles:
+                    params = urllib.parse.urlencode({
+                        "app_id": app_id,
+                        "app_key": app_key,
+                        "results_per_page": 20,
+                        "what": role,
+                        "where": location,
+                        "max_days_old": max_posting_age_days,
+                        "content-type": "application/json",
+                    })
+                    data = await asyncio.to_thread(
+                        _aggregator_request,
+                        f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}",
+                    )
+                    results.extend(_map_aggregator_job(job, provider) for job in data.get("results", []))
+                return results
+
+            rapid_key = os.getenv("RAPIDAPI_KEY")
+            if not rapid_key:
+                return []
+            results = []
+            for role in roles:
+                params = urllib.parse.urlencode({"query": role, "page": 1, "num_pages": 1, "country": "ie", "date_posted": "month"})
+                data = await asyncio.to_thread(
+                    _aggregator_request,
+                    f"https://jsearch.p.rapidapi.com/search?{params}",
+                    {"X-RapidAPI-Key": rapid_key, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
+                )
+                results.extend(_map_aggregator_job(job, provider) for job in data.get("data", []))
+            return results
+        except Exception as exc:
+            logger.warning("%s job aggregation failed: %s", provider, type(exc).__name__)
+            return []
+
+    provider_results = await asyncio.gather(*(fetch_provider(provider) for provider in providers))
+    return [job for result in provider_results for job in result]
+
 def _url_tokens(value: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", value.lower()) if len(token) > 2}
+
+
+def _is_linkedin_url(url: str) -> bool:
+    return bool(re.search(r"(?:^|//)(?:[a-z]{2,3}\.)?linkedin\.com/", url, re.IGNORECASE))
 
 
 def _url_is_expired_sync(url: str) -> bool:
@@ -411,6 +529,14 @@ def _check_url_sync(url: str, job_title: str, company: str, allow_client_rendere
         "position is no longer open",
         "this role is no longer available",
         "job is no longer available",
+        "oh no, this job is no longer available",
+        "oh no this job is no longer available",
+        "we've searched for similar jobs for you",
+        "we have searched for similar jobs for you",
+        "start a new search",
+        "this position has been filled",
+        "the position has been filled",
+        "applications for this role have closed",
         "this listing is no longer active",
         "application deadline has passed",
     )
@@ -727,15 +853,21 @@ def update_verification_rows(rows: List[Dict[str, Any]], user_id: str) -> None:
             verification_status = "Expired"
         if is_expired_listing_text(str(result.get("Job Title") or "")) or is_expired_listing_text(str(result.get("Company") or "")):
             verification_status = "Expired"
-        if verification_status not in {"Active", "Expired"}:
-            urls_to_check = {
-                str(result.get("Official Listing URL") or "").strip(),
-                str(job.get("Official Listing URL") or "").strip(),
-                str(job.get("URL") or "").strip(),
-                str(job.get("Original Listing URL") or "").strip(),
-            }
-            if any(_url_is_expired_sync(url) for url in urls_to_check):
-                verification_status = "Expired"
+        urls_to_check = {
+            str(result.get("Official Listing URL") or "").strip(),
+            str(job.get("Official Listing URL") or "").strip(),
+            str(job.get("URL") or "").strip(),
+            str(job.get("Original Listing URL") or "").strip(),
+        }
+        linkedin_urls = {url for url in urls_to_check if _is_linkedin_url(url)}
+        urls_to_check = linkedin_urls or urls_to_check
+        if verification_status != "Expired" and any(_url_is_expired_sync(url) for url in urls_to_check):
+            verification_status = "Expired"
+            verification_notes = (
+                "LinkedIn indicates that this job is no longer available."
+                if linkedin_urls
+                else "Listing page indicates that this job is no longer available."
+            )
 
         job["Verification Status"] = verification_status
         job["Verification Notes"] = verification_notes or "Not specified"
@@ -1073,6 +1205,7 @@ async def call_openai_fallback(
     instructions: str,
     prompt: str,
     use_google_search: bool,
+    model: str | None = None,
 ) -> str | None:
     """Use OpenAI only when configured and Gemini has exhausted its retries."""
     api_key = os.getenv("OPENAI_API_KEY")
@@ -1084,7 +1217,7 @@ async def call_openai_fallback(
 
         client = OpenAI(api_key=api_key)
         request: Dict[str, Any] = {
-            "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            "model": model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
             "input": f"{instructions}\n\n{prompt}",
         }
         if use_google_search:
@@ -1105,6 +1238,107 @@ async def call_openai_fallback(
     except Exception as exc:
         logger.error(f"OpenAI fallback failed: {type(exc).__name__}: {exc}")
         return None
+
+
+async def call_anthropic_extraction(instructions: str, prompt: str) -> str | None:
+    """Use Claude for opt-in CV extraction without adding an SDK dependency."""
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    def run_request() -> str:
+        payload = json.dumps({
+            "model": os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-5-sonnet-latest"),
+            "max_tokens": 3000,
+            "temperature": 0,
+            "system": instructions,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return "".join(
+            str(block.get("text", ""))
+            for block in data.get("content", [])
+            if block.get("type") == "text"
+        )
+
+    try:
+        return await asyncio.to_thread(run_request)
+    except Exception as exc:
+        logger.warning("Anthropic CV extraction failed: %s", type(exc).__name__)
+        return None
+
+
+async def call_cv_extraction_model(instructions: str, prompt: str) -> str:
+    """Try the configured extractor first, then fall back to another provider."""
+    preferred = os.getenv("CV_EXTRACTION_PROVIDER", "openai").strip().lower()
+    providers = [preferred] + [provider for provider in ("openai", "anthropic", "gemini") if provider != preferred]
+    for provider in providers:
+        if provider == "openai":
+            response = await call_openai_fallback(
+                instructions,
+                prompt,
+                use_google_search=False,
+                model=os.getenv("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini"),
+            )
+        elif provider in {"anthropic", "claude"}:
+            response = await call_anthropic_extraction(instructions, prompt)
+        else:
+            try:
+                response = await call_gemini_with_retry(
+                    instructions,
+                    prompt,
+                    use_google_search=False,
+                    max_retries=2,
+                    initial_delay=3,
+                )
+            except Exception as exc:
+                logger.warning("Gemini CV extraction failed: %s", type(exc).__name__)
+                response = None
+        if response:
+            logger.info("CV extraction completed with %s", provider)
+            return response
+    raise HTTPException(status_code=503, detail="All CV extraction providers failed or are unavailable")
+
+
+async def call_job_search_model(instructions: str, prompt: str) -> str:
+    """Use structured aggregators first, then the configured live-search model."""
+    preferred = os.getenv("JOB_SEARCH_PROVIDER", "openai").strip().lower()
+    providers = [preferred] + [provider for provider in ("openai", "gemini") if provider != preferred]
+    for provider in providers:
+        if provider == "openai":
+            response = await call_openai_fallback(
+                instructions,
+                prompt,
+                use_google_search=True,
+                model=os.getenv("OPENAI_SEARCH_MODEL", "gpt-4o"),
+            )
+        else:
+            try:
+                response = await call_gemini_with_retry(
+                    instructions,
+                    prompt,
+                    use_google_search=True,
+                    max_retries=5,
+                    initial_delay=8,
+                )
+            except Exception as exc:
+                logger.warning("Gemini job search failed: %s", type(exc).__name__)
+                response = None
+        if response:
+            logger.info("Job discovery batch completed with %s", provider)
+            return response
+    raise HTTPException(status_code=503, detail="All job discovery providers failed or are unavailable")
 
 
 async def run_cv_analyzer_agent(cv_text: str) -> str:
@@ -1141,13 +1375,7 @@ async def run_cv_analyzer_agent(cv_text: str) -> str:
 
     prompt = f"Analyze this CV and create a detailed candidate profile for {location_context} job matching:\n\n{cv_text}"
     
-    response = await call_gemini_with_retry(
-        instructions,
-        prompt,
-        use_google_search=False,
-        max_retries=2,
-        initial_delay=3,
-    )
+    response = await call_cv_extraction_model(instructions, prompt)
     logger.info("✅ Agent 1 completed: Candidate profile created")
     return response
 
@@ -1459,6 +1687,23 @@ async def run_incremental_job_finder(
         return unique_jobs
     
     all_jobs = []
+
+    aggregator_location = target_location.strip() or TARGET_LOCATION or "Ireland"
+    aggregator_jobs = await fetch_aggregator_jobs(target_roles, aggregator_location, max_posting_age_days)
+    if aggregator_jobs:
+        normalized_aggregator_jobs = [
+            normalize_job(job) for job in aggregator_jobs if isinstance(job, dict)
+        ]
+        normalized_aggregator_jobs = [job for job in normalized_aggregator_jobs if job is not None]
+        normalized_aggregator_jobs = await validate_listing_urls(normalized_aggregator_jobs)
+        normalized_aggregator_jobs = keep_new_jobs(normalized_aggregator_jobs)
+        if normalized_aggregator_jobs:
+            all_jobs.extend(normalized_aggregator_jobs)
+            if user_id:
+                append_jobs_to_csv(normalized_aggregator_jobs, "job_matches.csv", user_id=user_id)
+            else:
+                append_jobs_to_csv(normalized_aggregator_jobs, "job_matches.csv")
+            logger.info("Structured aggregators added %s jobs before Gemini search", len(normalized_aggregator_jobs))
     
     for batch_idx, role_batch in enumerate(roles_batches, 1):
         batch_roles_str = ", ".join(role_batch)
@@ -1629,13 +1874,7 @@ Output ONLY a valid JSON array (no markdown, no ```json wrapper):
                 f"Do not return any title/company pair already present in the complete saved-job ledger included in your instructions. "
                 f"Match them against this candidate profile and score strictly using the rubric in your instructions:\n{cv_summary}{language_hint}"
             )
-            response = await call_gemini_with_retry(
-                instructions,
-                prompt,
-                use_google_search=True,
-                max_retries=5,
-                initial_delay=8
-            )
+            response = await call_job_search_model(instructions, prompt)
 
             # Parse JSON response
             try:
@@ -2024,8 +2263,38 @@ async def get_jobs(current_user: Dict[str, Any] = Depends(get_current_user)) -> 
         )
 
 
-async def rerank_jobs_with_gemini(profile: str, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Rerank a small retrieved pool while retaining the original jobs on failure."""
+async def call_cohere_rerank(query: str, documents: List[str]) -> List[Dict[str, Any]] | None:
+    """Use Cohere's dedicated reranker when explicitly configured."""
+    api_key = os.getenv("COHERE_API_KEY")
+    if not api_key or not documents:
+        return None
+
+    def run_request() -> List[Dict[str, Any]]:
+        payload = json.dumps({
+            "model": os.getenv("COHERE_RERANK_MODEL", "rerank-v3.5"),
+            "query": query,
+            "documents": documents,
+            "top_n": len(documents),
+            "return_documents": False,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "https://api.cohere.com/v2/rerank",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8")).get("results", [])
+
+    try:
+        return await asyncio.to_thread(run_request)
+    except Exception as exc:
+        logger.warning("Cohere reranking failed: %s", type(exc).__name__)
+        return None
+
+
+async def rerank_jobs(profile: str, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rerank a small pool with a configured provider, retaining results on failure."""
     candidates = jobs[:10]
     candidate_text = "\n\n".join(
         f"JOB {index}: {job.get('Job Title', 'Not specified')} at {job.get('Company', 'Not specified')}\n"
@@ -2042,8 +2311,37 @@ Use a 0-100 score. Cite genuine overlaps, identify concrete missing hard require
 infer experience that is not supported by the candidate profile.
 """
     prompt = f"CANDIDATE PROFILE:\n{profile[:12000]}\n\nRETRIEVED JOBS:\n{candidate_text}"
+    provider = os.getenv("RERANK_PROVIDER", "gemini").strip().lower()
     try:
-        response = await call_gemini_with_retry(instructions, prompt, use_google_search=False, max_retries=2, initial_delay=2)
+        if provider == "cohere":
+            cohere_results = await call_cohere_rerank(profile, [
+                f"{job.get('Job Title', '')} at {job.get('Company', '')}: {job.get('Job Description', '')}"
+                for job in candidates
+            ])
+            if not cohere_results:
+                return jobs
+            ordered = []
+            for result in sorted(cohere_results, key=lambda item: float(item.get("relevance_score", 0)), reverse=True):
+                index = int(result.get("index", -1))
+                if 0 <= index < len(candidates):
+                    enriched = dict(candidates[index])
+                    enriched["Rerank Score"] = f"{float(result.get('relevance_score', 0)):.4f}"
+                    ordered.append(enriched)
+            ordered.extend(job for index, job in enumerate(candidates) if not any(job is item for item in ordered))
+            return ordered + jobs[10:]
+        if provider == "openai":
+            response = await call_openai_fallback(
+                instructions,
+                prompt,
+                use_google_search=False,
+                model=os.getenv("OPENAI_RERANK_MODEL", "gpt-4o"),
+            )
+        elif provider in {"anthropic", "claude"}:
+            response = await call_anthropic_extraction(instructions, prompt)
+        else:
+            response = await call_gemini_with_retry(instructions, prompt, use_google_search=False, max_retries=2, initial_delay=2)
+        if not response:
+            return jobs
         rankings = extract_json_array(response)
     except Exception as exc:
         logger.warning("Job reranking unavailable; retaining hybrid retrieval order: %s", type(exc).__name__)
@@ -2079,6 +2377,11 @@ infer experience that is not supported by the candidate profile.
     return ordered_jobs + jobs[10:]
 
 
+async def rerank_jobs_with_gemini(profile: str, jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Backward-compatible wrapper for callers using the original reranker name."""
+    return await rerank_jobs(profile, jobs)
+
+
 @app.get("/api/jobs/search")
 async def search_saved_jobs(
     q: str = "",
@@ -2087,7 +2390,7 @@ async def search_saved_jobs(
     rerank: bool = False,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """Retrieve a broad hybrid pool and optionally rerank its top candidates with Gemini."""
+    """Retrieve a broad hybrid pool and optionally rerank its top candidates."""
     jobs = [
         job for job in import_jobs_from_csv("job_matches.csv", current_user["uid"])
         if job.get("User Dismissed", "").lower() != "yes"
@@ -2101,7 +2404,7 @@ async def search_saved_jobs(
     retrieval_limit = min(max(bounded_limit, 50), 100)
     retrieved_jobs = hybrid_search_jobs(jobs, q, retrieval_limit)
     if rerank and profile.strip() and retrieved_jobs:
-        retrieved_jobs = await rerank_jobs_with_gemini(profile, retrieved_jobs)
+        retrieved_jobs = await rerank_jobs(profile, retrieved_jobs)
     SEARCH_RESULT_CACHE[cache_key] = (time.time(), retrieved_jobs)
     return JSONResponse({"jobs": retrieved_jobs[:bounded_limit], "total": len(jobs)})
 

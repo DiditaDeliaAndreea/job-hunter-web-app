@@ -62,6 +62,19 @@ Create `.env` in the project root. Never commit it.
 GOOGLE_API_KEY=your-google-api-key
 OPENAI_API_KEY=your-openai-api-key
 OPENAI_MODEL=gpt-4.1-mini
+# Optional structured CV extraction provider: gemini (default), openai, or anthropic
+CV_EXTRACTION_PROVIDER=gemini
+OPENAI_EXTRACTION_MODEL=gpt-4o-mini
+ANTHROPIC_API_KEY=your-anthropic-api-key
+ANTHROPIC_EXTRACTION_MODEL=claude-3-5-sonnet-latest
+# Optional structured job sources. Use "adzuna", "jsearch", or both.
+JOB_AGGREGATORS=adzuna,jsearch
+ADZUNA_APP_ID=your-adzuna-app-id
+ADZUNA_APP_KEY=your-adzuna-app-key
+RAPIDAPI_KEY=your-rapidapi-key
+# Primary live-search provider; falls back to Gemini when unavailable.
+JOB_SEARCH_PROVIDER=openai
+OPENAI_SEARCH_MODEL=gpt-4o
 FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"your-project-id"}
 FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
 NEXT_PUBLIC_FIREBASE_API_KEY=your-web-api-key
@@ -72,6 +85,15 @@ NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-messaging-sender-id
 NEXT_PUBLIC_FIREBASE_APP_ID=your-web-app-id
 NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=your-measurement-id
 ```
+
+Set `CV_EXTRACTION_PROVIDER=openai` to use GPT-4o-mini for CV structuring, or
+`CV_EXTRACTION_PROVIDER=anthropic` to use Claude for complex multi-page layouts.
+The default remains Gemini so existing deployments do not change behavior.
+
+Set `JOB_AGGREGATORS=adzuna,jsearch` to add structured listings before live model
+search. Set `JOB_SEARCH_PROVIDER=openai` to prioritize OpenAI web search, with
+Gemini retained as the fallback provider. Aggregator results still pass through
+the existing freshness, duplicate, description, and dead-link validation.
 
 `OPENAI_API_KEY` is optional. The app uses Gemini first and tries OpenAI after the first Gemini failure when the key is configured.
 
