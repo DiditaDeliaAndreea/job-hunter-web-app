@@ -80,6 +80,11 @@ async def test_partial_batch_results_are_persisted_before_error(monkeypatch):
     monkeypatch.setattr(api, "call_gemini_with_retry", fake_call_gemini_with_retry)
     monkeypatch.setattr(api, "append_jobs_to_csv", fake_append_jobs_to_csv)
 
+    async def keep_fixture_jobs(jobs):
+        return jobs
+
+    monkeypatch.setattr(api, "validate_listing_urls", keep_fixture_jobs)
+
     result = await api.run_incremental_job_finder("candidate profile")
 
     assert result[0]["Job Title"] == "QA Engineer"
