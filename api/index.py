@@ -531,14 +531,13 @@ async def fetch_aggregator_jobs(
             for role in roles:
                 params = urllib.parse.urlencode({
                     "query": role,
-                    "page": 1,
                     "num_pages": 1,
                     "country": "ie",
                     "date_posted": _jsearch_date_posted(max_posting_age_days),
                 })
                 data = await asyncio.to_thread(
                     _aggregator_request,
-                    f"https://jsearch.p.rapidapi.com/search?{params}",
+                    f"https://jsearch.p.rapidapi.com/search-v2?{params}",
                     {"X-RapidAPI-Key": rapid_key, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
                 )
                 results.extend(_map_aggregator_job(job, provider) for job in data.get("data", []))
