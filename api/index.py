@@ -475,8 +475,20 @@ async def fetch_aggregator_jobs(
             if provider == "adzuna":
                 app_id = os.getenv("ADZUNA_APP_ID")
                 app_key = os.getenv("ADZUNA_APP_KEY")
-                country = os.getenv("ADZUNA_COUNTRY", "ie")
+                # Adzuna has no Ireland index; "ie" always fails with UNSUPPORTED_COUNTRY.
+                # Fall back to "gb" (closest supported market) unless the caller overrides it.
+                country = os.getenv("ADZUNA_COUNTRY", "gb")
+                supported_countries = {
+                    "at", "au", "be", "br", "ca", "ch", "de", "es", "fr", "gb",
+                    "in", "it", "mx", "nl", "nz", "pl", "sg", "us", "za",
+                }
                 if not app_id or not app_key:
+                    return []
+                if country not in supported_countries:
+                    logger.warning(
+                        "Adzuna does not support country '%s' (supported: %s); skipping Adzuna",
+                        country, ", ".join(sorted(supported_countries)),
+                    )
                     return []
                 results = []
                 for role in roles:

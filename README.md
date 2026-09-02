@@ -105,6 +105,13 @@ way for freshness filtering. Jooble's free tier issues one key per country
 and caps each key at 500 lifetime requests, so keep it as a supplementary
 source alongside Adzuna/JSearch rather than your only aggregator.
 
+Adzuna has no Ireland index. Its supported country codes are `at, au, be,
+br, ca, ch, de, es, fr, gb, in, it, mx, nl, nz, pl, sg, us, za` — `ie`
+always fails with `UNSUPPORTED_COUNTRY`. `ADZUNA_COUNTRY` defaults to `gb`
+(the closest supported market); set it explicitly if you're targeting a
+different supported country. Unsupported values are skipped with a warning
+instead of failing the whole search.
+
 Set `JOB_MATCH_PROVIDER=openai` (default) or `gemini` to choose which AI
 provider scores fetched jobs against the candidate CV — computing the fit
 score, match reasons, missing requirements, extracted skills, and the
