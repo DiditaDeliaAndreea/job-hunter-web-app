@@ -92,6 +92,36 @@ def replace_jobs(jobs: List[Dict[str, Any]], user_id: str) -> None:
         batch.commit()
 
 
+def dismiss_job(user_id: str, job_title: str, company: str) -> bool:
+    """Mark exactly one saved job as dismissed with a single document read + write."""
+    doc_ref = _jobs_collection(user_id).document(job_id({"Job Title": job_title, "Company": company}))
+    snapshot = doc_ref.get()
+    if not snapshot.exists:
+        return False
+    data = dict(snapshot.to_dict().get("data") or {})
+    data["User Dismissed"] = "Yes"
+    doc_ref.set({"data": data})
+    return True
+
+
+def dismiss_expired_jobs(user_id: str) -> int:
+    """Mark only expired, not-yet-dismissed jobs as dismissed without touching every saved job."""
+    database = _get_database()
+    documents = _jobs_collection(user_id).where("data.Verification Status", "==", "Expired").stream()
+    to_update = []
+    for document in documents:
+        data = dict(document.to_dict().get("data") or {})
+        if str(data.get("User Dismissed", "")).strip().lower() != "yes":
+            data["User Dismissed"] = "Yes"
+            to_update.append((document.reference, data))
+    for start in range(0, len(to_update), 400):
+        batch = database.batch()
+        for reference, data in to_update[start:start + 400]:
+            batch.set(reference, {"data": data})
+        batch.commit()
+    return len(to_update)
+
+
 def append_jobs(jobs: List[Dict[str, Any]], user_id: str) -> None:
     existing = fetch_jobs(user_id)
     existing_keys = {

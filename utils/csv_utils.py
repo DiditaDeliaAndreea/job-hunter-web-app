@@ -189,6 +189,9 @@ def append_jobs_to_csv(jobs: List[Dict[str, Any]], filename: str = "job_matches.
 
 def dismiss_expired_jobs_in_csv(filename: str = "job_matches.csv", user_id: str | None = None) -> int:
     """Mark all verified-expired jobs as dismissed. Returns the count dismissed."""
+    if firebase_utils.is_configured() and user_id:
+        return firebase_utils.dismiss_expired_jobs(user_id)
+
     jobs = import_jobs_from_csv(filename, user_id)
     count = 0
     for job in jobs:
@@ -205,6 +208,9 @@ def dismiss_expired_jobs_in_csv(filename: str = "job_matches.csv", user_id: str 
 
 def dismiss_job_in_csv(job_title: str, company: str, filename: str = "job_matches.csv", user_id: str | None = None) -> bool:
     """Mark a job as dismissed without deleting it, preventing future re-addition."""
+    if firebase_utils.is_configured() and user_id:
+        return firebase_utils.dismiss_job(user_id, job_title, company)
+
     jobs = import_jobs_from_csv(filename, user_id)
     target_key = (job_title.strip().lower(), company.strip().lower())
     updated = False
