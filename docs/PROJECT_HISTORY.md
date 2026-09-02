@@ -1,297 +1,138 @@
 # CareerMatch Project History
 
-## Overview
+## Project snapshot
 
-CareerMatch is a CV-powered job search dashboard with a Next.js frontend and a FastAPI backend. The app now uses Firebase for authentication, Firestore for user-scoped records, and Firebase Storage for uploaded CV files.
+CareerMatch is a CV-powered job-search dashboard built with a Next.js frontend and a FastAPI backend. The current app is centered on a signed-in user workflow: upload CVs, save them to Firebase Storage, set target and excluded roles, run AI-assisted job searches, review matches, and manage jobs through an authenticated account.
 
-## Architecture
+## Current architecture
 
-- `app/`: Next.js App Router frontend and user interface.
-- `api/index.py`: FastAPI backend, CV parsing, AI search, verification, exports, authentication, and Firebase-backed endpoints.
-- `lib/firebase.ts`: Firebase Web SDK initialization and Analytics.
-- `lib/api.ts`: authenticated frontend requests with Firebase ID tokens.
-- `utils/firebase_utils.py`: Firebase Admin SDK, Firestore, Storage, CV files, jobs, and prompt preferences.
-- `utils/csv_utils.py`: CSV fallback, normalization, deduplication, and migration support.
-- `utils/browserStorage.ts`: local browser CV copies used by the job-detail CV workspace.
-- `app/navigation.tsx`: collapsible application navigation.
-- `app/job-list.tsx`: shared Open Jobs and Applied Jobs card view.
+- `app/`: Next.js App Router frontend, pages, navigation, and user screens.
+- `api/index.py`: FastAPI backend for CV upload, AI search orchestration, Firebase-authenticated endpoints, and job persistence.
+- `lib/api.ts`: frontend request layer that includes the Firebase ID token on authenticated API calls.
+- `lib/firebase.ts`: Firebase web client initialization and analytics setup.
+- `utils/firebase_utils.py`: Firebase Admin SDK logic for Firestore, Storage, jobs, CV metadata, and prompt personalization.
+- `utils/csv_utils.py`: CSV fallback and migration/normalization helpers retained for local compatibility and testing.
+- `utils/browserStorage.ts`: browser-side local CV cache used for faster preview and offline fallback.
 - `firebase/`: Firestore rules and indexes.
-- `scripts/`: maintenance and migration scripts.
-- `docs/`: project history and troubleshooting notes.
+- `scripts/`: import and maintenance scripts.
+- `docs/`: project history, troubleshooting, and user documentation.
 
-## Firebase Setup
+## Product evolution
 
-Firebase project:
+### Firebase-backed user workflow
 
-- Project ID: `cloud-gif-search-portfolio`
-- Hosting site: `job-hunter-3d937`
-- Hosting URL: https://job-hunter-3d937.web.app
-- Firestore location: `eur3`
+The project evolved from a local CSV-first workflow into a per-user Firebase-backed app. The main user lifecycle now includes:
 
-Firebase CLI files:
+- registration and sign-in via Firebase Email/Password
+- authenticated API requests using Firebase ID tokens
+- user-scoped Firestore records for jobs, CV metadata, and prompt preferences
+- Firebase Storage for uploaded PDF and DOCX files
+- per-user privacy boundaries enforced by Firestore rules
 
-- `.firebaserc`: associates the repository with the Firebase project.
-- `firebase.json`: points Hosting to `job-hunter-3d937` and Firestore to `firebase/firestore.rules` and `firebase/firestore.indexes.json`.
-- `firebase/firestore.rules`: per-user access rules.
-- `firebase/firestore.indexes.json`: Firestore indexes.
-
-The Firebase CLI was installed and authenticated. Firestore rules were deployed successfully.
-
-## Environment Configuration
-
-The backend `.env` uses a downloaded service-account JSON file:
-
-```env
-GOOGLE_APPLICATION_CREDENTIALS=C:\path\to\serviceAccountKey.json
-FIREBASE_STORAGE_BUCKET=cloud-gif-search-portfolio.firebasestorage.app
-```
-
-The frontend uses `NEXT_PUBLIC_FIREBASE_*` values in `.env.local` for the Web SDK and Analytics.
-
-Never commit `.env`, `.env.local`, service-account JSON files, API keys, or private keys.
-
-## Authentication
-
-Added Firebase Email/Password registration and sign-in:
-
-- `app/auth-provider.tsx` provides auth state and the sign-in/register screen.
-- `app/layout.tsx` protects the application behind the authenticated provider.
-- `lib/api.ts` sends the Firebase ID token in the `Authorization: Bearer ...` header.
-- `api/index.py` verifies Firebase ID tokens with Firebase Admin.
-- The Account page shows the account email and privacy information, not the internal Firebase UID.
-
-Firebase Console requirement:
-
-- Enable Authentication > Sign-in method > Email/Password.
-
-## Firestore Data Model
-
-Jobs:
+The app enforces the signed-in user path pattern:
 
 ```text
 users/{uid}/jobs/{job_id}
-```
-
-CV metadata:
-
-```text
 users/{uid}/cvs/{cv_id}
-```
-
-Prompt preferences:
-
-```text
 users/{uid}/prompt_preferences/{preference_id}
 ```
 
-Firestore rules restrict reads and writes to the signed-in user's own UID path.
+## User-facing functionality
 
-## Job Persistence
+### Search and shortlist flow
 
-Jobs are stored in Firestore when the backend receives an authenticated user ID and Firebase is configured. The current job operations include:
+The main dashboard now focuses on a simple, end-to-end job search process:
 
-- Search result saving.
-- Existing CSV migration.
-- Open job loading.
-- Applied/not-applied status.
-- Active/expired status.
-- Dismissal/removal.
-- Preferred URL updates.
-- Verification results.
+1. Sign in.
+2. Upload or select CVs.
+3. Set target and excluded role preferences.
+4. Start a search across recent opportunities.
+5. Review the resulting job cards and open-job list.
+6. Open a job detail page to inspect match reasoning and tailoring options.
 
-The local CSV was removed after migration because Firebase is now the active store. The CSV utility still contains a fallback for tests and local fallback usage.
+### Job management
 
-Migration endpoint:
+Users can:
 
-```text
-POST /api/jobs/import-csv
-```
+- mark jobs as applied or not applied
+- mark jobs as active or expired
+- dismiss or delete jobs
+- update the preferred listing URL
+- inspect job descriptions and match explanations
+- view a recommended CV and tailoring workspace on each job page
 
-It imports the existing `data/job_matches.csv` into the signed-in user's Firestore jobs. The old CSV was later removed locally after the Firebase migration.
+### CV management
 
-## CV Management
+The CV experience includes:
 
-CV files are saved through the backend:
+- PDF and DOCX uploads
+- saved CV metadata in Firestore
+- browser preview for uploaded files
+- DOCX-to-HTML conversion with Mammoth for previewing documents
+- selection of one or more saved CVs for a search
+- renaming or deletion of CV records
 
-- Metadata is stored in Firestore.
-- PDF/DOCX bytes are stored in Firebase Storage under `users/{uid}/cvs/...`.
-- CVs can be selected for a search.
-- CVs can be renamed.
-- CVs can be removed from Firestore and Storage.
-- The My CVs page displays saved CVs in a left list and opens the selected CV in a larger right-side preview.
-- PDFs preview in an iframe.
-- DOCX files are converted to HTML with Mammoth and shown in the preview panel.
+### Personalization and tailoring
 
-Required backend services:
+The job detail workspace supports direct tailoring and Q&A. Every non-empty prompt is saved automatically and re-used as recent preference context in later AI requests. This is a retrieval-based personalization pattern instead of a model fine-tuning workflow.
 
-- Firestore enabled.
-- Firebase Storage enabled by clicking Storage > Get started in Firebase Console.
+## UI and navigation changes
 
-## AI Tailoring Personalization
+Major UX iterations included:
 
-The CV workspace supports tailoring and direct questions. Every non-empty user prompt is saved automatically; there is no separate save button.
+- collapsible left navigation
+- responsive job cards instead of dense tables
+- plain-language labels for the main tasks
+- bigger CV preview regions
+- a more direct Open jobs flow after search completion
+- Job preferences managed as removable pills with simple role-entry behavior
+- clearer Account and privacy screens
 
-Prompts are stored in `users/{uid}/prompt_preferences` and recent prompts are included as style context in later tailoring requests. This is retrieval-based personalization, not live model fine-tuning.
+## Operational history
 
-The tailoring flow:
+### Firebase setup and delivery
 
-1. User selects a recommended CV.
-2. User enters a tailoring instruction or question.
-3. The backend saves the prompt.
-4. The backend includes recent user preferences in the AI request.
-5. The response is returned to the CV workspace.
+The project was configured to use Firebase for hosting, storage, auth, and user data. The app expects:
 
-## Navigation and Pages
+- a Firebase project with Auth enabled
+- Storage enabled in the Firebase Console
+- Firestore enabled for user data
+- service account credentials for the backend only
+- browser Firebase config keys for the frontend web SDK
 
-The application has a collapsible navigation menu. It starts collapsed and expands when the menu button is clicked.
+### Environment expectations
 
-Pages:
+The backend uses service-account credentials or `GOOGLE_APPLICATION_CREDENTIALS`. The frontend uses `NEXT_PUBLIC_FIREBASE_*` values. Sensitive keys and JSON credentials are never committed to the repository.
 
-- `/`: Find jobs and start a search.
-- `/open-jobs`: Open job cards and saved-job checking.
-- `/applied-jobs`: Applied job cards.
-- `/cvs`: CV upload, rename, remove, and preview.
-- `/preferences`: Target and excluded role pills.
-- `/stats`: Job and application statistics.
-- `/account`: Account email and privacy information.
-- `/jobs/[id]`: Full job details, tailored CV workspace, and job actions.
+### Troubleshooting and stabilization
 
-The main search page no longer displays large job tables. When a search completes, it links the user to Open jobs.
+Key issues fixed during the project lifecycle included:
 
-## Job Preferences
+- missing Firebase Admin credentials causing API failures
+- missing Storage buckets causing CV upload errors
+- repeated Firebase Admin initialization warnings
+- stale backend processes after route changes
+- Windows Firebase CLI login issues requiring `--no-localhost`
+- partial search result loss when a later batch failed
+- automatic CSV overwrite problems during empty-result scenarios
 
-Target and excluded roles are displayed as removable pills:
+## Validation and current state
 
-- Press Enter or comma to add a role.
-- Click a pill to remove it.
-- Pasted comma-separated or newline-separated roles are split automatically.
-- Surrounding single or double quotation marks are removed automatically.
-- Preferences are currently stored in browser local storage under `careermatch-role-preferences`.
+The project has been validated through repeated local checks, including:
 
-## Job Cards and Actions
+- frontend build validation
+- backend syntax validation
+- targeted regression tests around CSV status handling and partial-result persistence
+- Firebase rules deployment
+- authenticated flow validation for user-scoped job and CV storage
 
-Open Jobs and Applied Jobs use responsive cards instead of table rows. Cards show:
+## Current follow-ups
 
-- Title.
-- Company.
-- Location.
-- Working type.
-- Match score.
-- Status.
-- Details link.
-- Original listing link when available.
+- confirm Firebase Storage remains enabled in production
+- verify the service account JSON remains outside the repository
+- continue smoke testing registration, CV upload, job search, and tailoring flows
+- consider a future cross-device sync option for role preferences
 
-Expired status pills are red. Active status pills are green. Applied pills are green.
+## Project note
 
-Job detail actions:
-
-- Mark applied/not applied.
-- Mark active/expired.
-- Delete/dismiss with confirmation.
-- Edit the preferred listing URL.
-
-Open jobs also contains the saved-job checking workflow with progress and live logs.
-
-## UI Improvements
-
-Recent usability work included:
-
-- Collapsible side navigation.
-- Responsive job cards.
-- Wider Job Preferences sections with more spacing.
-- Larger CV preview area.
-- Plain-language labels replacing technical wording such as pipeline, workspace, and ATS-facing text.
-- Improved Account page layout to prevent awkward wrapping.
-- Clear search completion link to Open jobs.
-
-## Troubleshooting History
-
-### Firebase Admin credentials missing
-
-Symptom: `/api/jobs` and `/api/cvs` returned `503`.
-
-Cause: the backend did not have `FIREBASE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS`.
-
-Fix: configure the service-account JSON path in `.env` and restart FastAPI.
-
-### Firebase Storage bucket missing
-
-Symptom: CV upload returned a Google Storage 404.
-
-Cause: Firebase Storage had not been provisioned and the configured bucket did not exist.
-
-Fix: open Firebase Console > Storage and click Get started.
-
-### Firebase Admin initialized twice
-
-Symptom: concurrent jobs and CV requests produced a default-app initialization warning.
-
-Fix: added a lock around one-time Firebase Admin initialization in `utils/firebase_utils.py`.
-
-### Firebase login Windows callback crash
-
-The standard Firebase CLI browser callback crashed under Node 24 on Windows. The manual `firebase login --no-localhost` flow worked, and the CLI was authenticated successfully.
-
-### Stale backend process
-
-After adding routes, the running FastAPI process needed to be stopped and restarted so new endpoints such as `/api/jobs/import-csv` and CV endpoints were loaded.
-
-## Cleanup and Organization
-
-- Removed the empty `supabase/` directory.
-- Moved `TROUBLESHOOTING.md` to `docs/TROUBLESHOOTING.md`.
-- Moved `run_import.py` to `scripts/run_import.py`.
-- Moved Firebase rules and indexes under `firebase/` and updated `firebase.json` paths.
-- Removed the local `data/` folder after Firebase became the active job store.
-- Removed generated `tsconfig.tsbuildinfo`.
-- Added ignore rules for caches, coverage, logs, Firebase local state, OS metadata, and package-manager debug logs.
-- `.next`, `node_modules`, `.venv312`, `.pytest_cache`, `__pycache__`, and `.vercel` remain local/generated and are ignored.
-- The repository was pushed to GitHub on `main` in commit `0a01fe9`.
-
-## Validation History
-
-Validated repeatedly during the work:
-
-- `npm run build` passed after the final UI changes.
-- `python -m py_compile api/index.py utils/firebase_utils.py` passed.
-- `tests/test_csv_status_update.py` passed.
-- Partial-results persistence test passed after preserving optional local CSV compatibility.
-- Firebase rules deployed successfully.
-
-## Useful Commands
-
-Start backend:
-
-```powershell
-.venv312\Scripts\python.exe -m uvicorn api.index:app --host 0.0.0.0 --port 8000
-```
-
-Start frontend:
-
-```powershell
-npm run dev -- --hostname 0.0.0.0 --port 3000
-```
-
-Build frontend:
-
-```powershell
-npm run build
-```
-
-Run Python tests:
-
-```powershell
-.venv312\Scripts\python.exe -m pytest
-```
-
-## Current Follow-ups
-
-- Commit and push the latest changes made after commit `0a01fe9` if desired.
-- Confirm Firebase Storage is enabled in the Firebase Console.
-- Keep the service-account JSON outside the repository.
-- Consider moving role preferences from local storage to Firestore for cross-device sync.
-- Run a full authenticated smoke test for registration, CV upload, preview, rename, delete, job search, and prompt personalization.
-
-## Obsidian Notes
-
-This file is plain Markdown and can be opened as an Obsidian note. The repository itself can be added as an Obsidian vault, or the `docs/` folder can be opened as a vault if you prefer a smaller documentation view.
+This file documents the project’s current direction and key milestones. For operational issues and day-to-day troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md). For practical end-user instructions, see [USER_GUIDE.md](USER_GUIDE.md).

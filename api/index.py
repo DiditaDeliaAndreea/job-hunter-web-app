@@ -9,7 +9,7 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -366,8 +366,51 @@ def _aggregator_request(url: str, headers: Dict[str, str] | None = None) -> Dict
         return json.loads(response.read().decode("utf-8"))
 
 
+def _aggregator_post_request(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=body, headers={"Content-type": "application/json"}, method="POST"
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _posted_within_max_age(posted_date: str, max_posting_age_days: int) -> bool:
+    """Enforce freshness using the aggregator's own timestamp rather than trusting AI-guessed dates."""
+    if not posted_date or posted_date == "Not specified":
+        return True
+    try:
+        parsed = datetime.fromisoformat(posted_date.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed).days <= max_posting_age_days
+
+
+def _jsearch_date_posted(max_posting_age_days: int) -> str:
+    if max_posting_age_days <= 1:
+        return "today"
+    if max_posting_age_days <= 3:
+        return "3days"
+    if max_posting_age_days <= 7:
+        return "week"
+    return "month"
+
+
+def _jooble_posted_date(raw_job: Dict[str, Any]) -> str:
+    """Normalize Jooble's "updated" timestamp to ISO 8601 for freshness filtering."""
+    updated = str(raw_job.get("updated") or "").strip()
+    if not updated:
+        return "Not specified"
+    try:
+        return datetime.strptime(updated, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).isoformat()
+    except ValueError:
+        return updated
+
+
 def _map_aggregator_job(raw_job: Dict[str, Any], source: str) -> Dict[str, Any]:
-    """Map Adzuna/JSearch records into the existing normalized job contract."""
+    """Map Adzuna/JSearch/Jooble records into the existing normalized job contract."""
     if source == "adzuna":
         title = raw_job.get("title") or "Not specified"
         company = (raw_job.get("company") or {}).get("display_name") or "Not specified"
@@ -378,6 +421,14 @@ def _map_aggregator_job(raw_job: Dict[str, Any], source: str) -> Dict[str, Any]:
         salary = "Not specified"
         if raw_job.get("salary_min") or raw_job.get("salary_max"):
             salary = f"{raw_job.get('salary_min', '')}-{raw_job.get('salary_max', '')}"
+    elif source == "jooble":
+        title = raw_job.get("title") or "Not specified"
+        company = raw_job.get("company") or "Not specified"
+        location = raw_job.get("location") or "Not specified"
+        url = raw_job.get("link") or "Not specified"
+        description = raw_job.get("snippet") or "Not specified"
+        posted_date = _jooble_posted_date(raw_job)
+        salary = raw_job.get("salary") or "Not specified"
     else:
         title = raw_job.get("job_title") or "Not specified"
         company = raw_job.get("employer_name") or "Not specified"
@@ -410,12 +461,12 @@ async def fetch_aggregator_jobs(
     location: str,
     max_posting_age_days: int,
 ) -> List[Dict[str, Any]]:
-    """Fetch optional structured listings from Adzuna, JSearch, or both."""
+    """Fetch optional structured listings from Adzuna, JSearch, and/or Jooble."""
     providers = {
         value.strip().lower()
         for value in os.getenv("JOB_AGGREGATORS", "").split(",")
         if value.strip()
-    } & {"adzuna", "jsearch"}
+    } & {"adzuna", "jsearch", "jooble"}
     if not providers:
         return []
 
@@ -443,21 +494,43 @@ async def fetch_aggregator_jobs(
                         f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}",
                     )
                     results.extend(_map_aggregator_job(job, provider) for job in data.get("results", []))
-                return results
+                return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
+
+            if provider == "jooble":
+                api_key = os.getenv("JOOBLE_API_KEY")
+                if not api_key:
+                    return []
+                results = []
+                for role in roles:
+                    data = await asyncio.to_thread(
+                        _aggregator_post_request,
+                        f"https://jooble.org/api/{api_key}",
+                        {"keywords": role, "location": location},
+                    )
+                    results.extend(_map_aggregator_job(job, provider) for job in data.get("jobs", []))
+                # Jooble's free tier has a 500-request lifetime limit per key; keep this as a
+                # supplementary source alongside Adzuna/JSearch rather than the sole provider.
+                return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
 
             rapid_key = os.getenv("RAPIDAPI_KEY")
             if not rapid_key:
                 return []
             results = []
             for role in roles:
-                params = urllib.parse.urlencode({"query": role, "page": 1, "num_pages": 1, "country": "ie", "date_posted": "month"})
+                params = urllib.parse.urlencode({
+                    "query": role,
+                    "page": 1,
+                    "num_pages": 1,
+                    "country": "ie",
+                    "date_posted": _jsearch_date_posted(max_posting_age_days),
+                })
                 data = await asyncio.to_thread(
                     _aggregator_request,
                     f"https://jsearch.p.rapidapi.com/search?{params}",
                     {"X-RapidAPI-Key": rapid_key, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
                 )
                 results.extend(_map_aggregator_job(job, provider) for job in data.get("data", []))
-            return results
+            return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
         except Exception as exc:
             logger.warning("%s job aggregation failed: %s", provider, type(exc).__name__)
             return []
@@ -696,75 +769,6 @@ def extract_cv_role_suggestions(cv_summary: str) -> List[str]:
         if cleaned and cleaned not in roles:
             roles.append(cleaned)
     return roles[:12]
-
-
-def extract_cv_languages(cv_summary: str) -> List[str]:
-    """Extract spoken-language signals from a CV summary or analyzer JSON."""
-    text = str(cv_summary or "").strip()
-    language_aliases = {
-        "english": "English",
-        "irish": "Irish",
-        "romanian": "Romanian",
-        "french": "French",
-        "spanish": "Spanish",
-        "german": "German",
-        "italian": "Italian",
-        "portuguese": "Portuguese",
-        "dutch": "Dutch",
-        "arabic": "Arabic",
-        "chinese": "Chinese",
-        "japanese": "Japanese",
-        "korean": "Korean",
-        "polish": "Polish",
-        "czech": "Czech",
-        "greek": "Greek",
-        "russian": "Russian",
-        "ukrainian": "Ukrainian",
-        "hungarian": "Hungarian",
-        "swedish": "Swedish",
-        "norwegian": "Norwegian",
-        "danish": "Danish",
-        "finnish": "Finnish",
-        "turkish": "Turkish",
-        "latvian": "Latvian",
-        "lithuanian": "Lithuanian",
-        "slovak": "Slovak",
-    }
-
-    try:
-        parsed = json.loads(text)
-    except (TypeError, json.JSONDecodeError):
-        parsed = {}
-
-    if isinstance(parsed, dict):
-        for key in ["languages", "language_skills", "spoken_languages", "spoken_language_skills", "linguistic_skills"]:
-            value = parsed.get(key)
-            if isinstance(value, list):
-                extracted = []
-                for item in value:
-                    if isinstance(item, str):
-                        extracted.extend(item.split(","))
-                if extracted:
-                    return [
-                        language_aliases.get(lang.strip().casefold(), lang.strip())
-                        for lang in extracted
-                        if lang.strip()
-                    ]
-            elif isinstance(value, str):
-                return [
-                    language_aliases.get(lang.strip().casefold(), lang.strip())
-                    for lang in re.split(r"[,;\n]", value)
-                    if lang.strip()
-                ]
-
-    extracted = []
-    for match in re.finditer(r"\b(?:English|Irish|Romanian|French|Spanish|German|Italian|Portuguese|Dutch|Arabic|Chinese|Japanese|Korean|Polish|Czech|Greek|Russian|Ukrainian|Hungarian|Swedish|Norwegian|Danish|Finnish|Turkish|Latvian|Lithuanian|Slovak)\b(?:\s+(?:speaker|fluent|native|proficient|language))?", text, flags=re.IGNORECASE):
-        candidate = match.group(0)
-        cleaned = re.sub(r"\s+(?:speaker|fluent|native|proficient|language)$", "", candidate, flags=re.IGNORECASE).strip()
-        normalized = language_aliases.get(cleaned.casefold(), cleaned.title())
-        if normalized and normalized not in extracted:
-            extracted.append(normalized)
-    return extracted
 
 
 def build_search_roles(
@@ -1351,34 +1355,149 @@ async def call_cv_extraction_model(instructions: str, prompt: str) -> str:
     raise HTTPException(status_code=503, detail="All CV extraction providers failed or are unavailable")
 
 
-async def call_job_search_model(instructions: str, prompt: str) -> str:
-    """Use structured aggregators first, then the configured live-search model."""
-    preferred = os.getenv("JOB_SEARCH_PROVIDER", "openai").strip().lower()
+async def call_job_match_model(instructions: str, prompt: str) -> str:
+    """Score already-sourced listings against a candidate profile. Never used to discover jobs."""
+    preferred = os.getenv("JOB_MATCH_PROVIDER", "openai").strip().lower()
     providers = [preferred] + [provider for provider in ("openai", "gemini") if provider != preferred]
     for provider in providers:
         if provider == "openai":
             response = await call_openai_fallback(
                 instructions,
                 prompt,
-                use_google_search=True,
-                model=os.getenv("OPENAI_SEARCH_MODEL", "gpt-4o"),
+                use_google_search=False,
+                model=os.getenv("OPENAI_MATCH_MODEL", "gpt-4o-mini"),
             )
         else:
             try:
                 response = await call_gemini_with_retry(
                     instructions,
                     prompt,
-                    use_google_search=True,
-                    max_retries=5,
-                    initial_delay=8,
+                    use_google_search=False,
+                    max_retries=3,
+                    initial_delay=5,
                 )
             except Exception as exc:
-                logger.warning("Gemini job search failed: %s", type(exc).__name__)
+                logger.warning("Gemini job matching failed: %s", type(exc).__name__)
                 response = None
         if response:
-            logger.info("Job discovery batch completed with %s", provider)
+            logger.info("Job matching batch completed with %s", provider)
             return response
-    raise HTTPException(status_code=503, detail="All job discovery providers failed or are unavailable")
+    raise HTTPException(status_code=503, detail="All job matching providers failed or are unavailable")
+
+
+JOB_MATCH_FIT_RUBRIC = """
+FIT SCORE RUBRIC — follow this exactly when setting "Fit Score (%)":
+Start at 100 and apply the following deductions before assigning the score.
+
+HARD REQUIREMENT PENALTIES (apply each that is unmet):
+- Named proprietary tool/platform the candidate has no experience with (e.g. SAP, Salesforce,
+  Hogan, Unibanks, Workday, ServiceNow, specific CMS): -20 per unmet tool, max -40
+- Required years of experience the candidate clearly does not meet (e.g. "5+ years" when
+  candidate has 1-2 years in that discipline): -20 per unmet requirement, max -30
+- Mandatory degree or certification not present on the CV (e.g. "postgraduate required",
+  "CPA required", "CISSP required"): -25
+- Required domain-specific background the candidate has none of (e.g. "pharma GxP experience
+  required", "financial services background required"): -20
+- Automation or testing framework experience explicitly required but candidate's experience
+  is clearly in a different form of automation (e.g. role requires Playwright/Selenium/
+  Cypress test automation; candidate has workflow/process automation only): -20
+
+OVERMATCHING GUARD — keyword presence alone is not a match:
+- Do not award credit for a skill or tool if the CV only mentions it in passing or lists it
+  without demonstrating professional depth. Only count skills with clear evidence of sustained
+  use (multiple roles, quantified outcomes, or project ownership).
+- Do not treat "QA" as equivalent to "test automation". Do not treat "Python scripting" as
+  equivalent to "software engineering". Do not treat "data analysis" as equivalent to
+  "BI/data analytics tooling experience". Match the depth, not just the keyword.
+
+SCORING FLOOR:
+- Any job with 2 or more unmet hard requirements must score 65% or below.
+- Any job with a named proprietary tool requirement the candidate clearly lacks must score
+  70% or below, regardless of other matches.
+
+For "Match Reasons": write 2-4 sentences explaining the strongest genuine overlaps between
+the candidate profile and this specific role. Be honest — do not pad with generic claims.
+
+For "Missing Requirements": list every hard requirement from the job description that the
+candidate does not clearly meet. Use a bullet list. Write "None identified" if there are
+no meaningful gaps. This field must reflect the actual job description, not generic advice.
+"""
+
+
+async def run_job_matcher_agent(
+    cv_summary: str,
+    jobs: List[Dict[str, Any]],
+    cv_names: List[str],
+    applied_job_preferences: str,
+) -> Dict[tuple[str, str], Dict[str, Any]]:
+    """AGENT: Scores API-sourced listings against the candidate profile. Never discovers jobs itself."""
+    if not jobs:
+        return {}
+
+    listings_block = "\n\n".join(
+        f"[{index}] Job Title: {job.get('Job Title')}\n"
+        f"Company: {job.get('Company')}\n"
+        f"Location: {job.get('Location')}\n"
+        f"Working Type: {job.get('Working Type')}\n"
+        f"Description:\n{str(job.get('Job Description') or '')[:4000]}"
+        for index, job in enumerate(jobs)
+    )
+
+    instructions = f"""
+You are an expert recruiter scoring already-sourced job listings for one candidate. The listings
+were retrieved from a structured job-search API, not by you — score only the numbered listings
+provided below and never invent, add, or substitute a different job.
+
+CANDIDATE PROFILE:
+{cv_summary}
+
+CANDIDATE CV FILES AVAILABLE (choose the best match, return the exact filename): [{", ".join(cv_names)}]
+
+APPLIED-JOB PREFERENCE SIGNAL (use as a secondary hint, not a hard filter):
+{applied_job_preferences}
+{JOB_MATCH_FIT_RUBRIC}
+Output ONLY a valid JSON array (no markdown, no ```json wrapper) with one object per listing index:
+[
+  {{
+    "index": 0,
+    "Fit Score (%)": "e.g., 85%",
+    "Match Reasons": "2-4 sentences on genuine overlaps",
+    "Missing Requirements": "Bullet list of unmet hard requirements, or None identified",
+    "Extracted Skills": ["Hard skills, tools, frameworks, and certifications found in the listing"],
+    "Required Experience Years": "Required years or Not specified",
+    "Required Experience Areas": ["Core areas of required experience"],
+    "Seniority Level": "Entry, Mid, Senior, Lead, Manager, or Not specified",
+    "Must Have Requirements": ["Hard requirements that can disqualify a candidate"],
+    "Nice To Have": ["Preferred but non-blocking qualifications"],
+    "Embedding Text": "Concise normalized text combining title, skills, seniority, requirements, and responsibilities",
+    "Recommended CV": "Exact filename from the candidate CV files list above",
+    "CV Tailoring Recommendation": "Specific changes or emphasis for this job"
+  }}
+]
+"""
+    prompt = f"Score each numbered listing strictly against the candidate profile using the rubric above:\n\n{listings_block}"
+
+    response = await call_job_match_model(instructions, prompt)
+    try:
+        scored = extract_json_array(response)
+    except json.JSONDecodeError:
+        logger.warning("Job matcher response was not parseable JSON; skipping scoring for this batch")
+        return {}
+
+    enrichment: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for item in scored:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= index < len(jobs):
+            continue
+        job = jobs[index]
+        key = (str(job.get("Job Title", "")).strip().casefold(), str(job.get("Company", "")).strip().casefold())
+        enrichment[key] = item
+    return enrichment
 
 
 async def run_cv_analyzer_agent(cv_text: str) -> str:
@@ -1671,7 +1790,10 @@ async def run_incremental_job_finder(
     max_posting_age_days: int = 7,
 ) -> List[Dict[str, Any]]:
     """
-    AGENT 2: Searches for jobs in batches using Google Search and matches to candidate.
+    AGENT 2: Fetches jobs from structured job-search APIs and scores them against the candidate.
+
+    Job discovery is API-only (Adzuna/JSearch/Jooble via JOB_AGGREGATORS); AI is only used afterward to
+    score, explain, and recommend a CV for the listings the APIs returned.
 
     Args:
         cv_summary: Candidate profile from Agent 1
@@ -1684,13 +1806,8 @@ async def run_incremental_job_finder(
     target_roles = target_roles or TARGET_ROLES
     excluded_roles = excluded_roles or EXCLUDED_ROLES
     cv_names = cv_names or ["Uploaded CV"]
-    logger.info(f"🤖 Agent 2 (Job Finder) starting - batching {len(target_roles)} target roles...")
-    
-    # Match the notebook approach: work in smaller role batches so partial results
-    # are preserved and transient Gemini 503s do not block all earlier progress.
-    batch_size = 5
-    roles_batches = [target_roles[i:i + batch_size] for i in range(0, len(target_roles), batch_size)]
-    excluded_str = ", ".join(excluded_roles)
+    logger.info(f"🔎 Agent 2 (Job Finder) starting - querying structured job APIs for {len(target_roles)} target roles...")
+
     existing_jobs = import_jobs_from_csv("job_matches.csv", user_id)
     applied_job_preferences = build_applied_job_preferences(existing_jobs)
     saved_job_keys = {
@@ -1700,18 +1817,6 @@ async def run_incremental_job_finder(
         )
         for job in existing_jobs
     }
-    # Only show active non-dismissed jobs in the Gemini ledger — expired and dismissed jobs
-    # remain in saved_job_keys for code-level dedup but don't clutter the prompt or
-    # prevent Gemini from suggesting fresh postings for roles that previously expired.
-    active_jobs = [
-        job for job in existing_jobs
-        if job.get("User Dismissed", "").strip().lower() != "yes"
-        and job.get("Verification Status", "").strip().lower() != "expired"
-    ]
-    existing_jobs_summary = "\n".join(
-        f"- {job.get('Job Title', 'Not specified')} — {job.get('Company', 'Not specified')}"
-        for job in active_jobs
-    ) or "None"
 
     def keep_new_jobs(candidate_jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         unique_jobs = []
@@ -1725,354 +1830,83 @@ async def run_incremental_job_finder(
             saved_job_keys.add(key)
             unique_jobs.append(job)
         return unique_jobs
-    
-    all_jobs = []
+
+    def excluded_by_role(job: Dict[str, Any]) -> bool:
+        title = str(job.get("Job Title", "")).casefold()
+        return any(role.strip().casefold() in title for role in excluded_roles if role.strip())
+
+    if search_id:
+        update_search_status(search_id, "Querying structured job-search APIs...", 60)
 
     aggregator_location = target_location.strip() or TARGET_LOCATION or "Ireland"
     aggregator_jobs = await fetch_aggregator_jobs(target_roles, aggregator_location, max_posting_age_days)
-    if aggregator_jobs:
-        normalized_aggregator_jobs = [
-            normalize_job(job) for job in aggregator_jobs if isinstance(job, dict)
-        ]
-        normalized_aggregator_jobs = [job for job in normalized_aggregator_jobs if job is not None]
-        normalized_aggregator_jobs = await validate_listing_urls(normalized_aggregator_jobs)
-        normalized_aggregator_jobs = keep_new_jobs(normalized_aggregator_jobs)
-        if normalized_aggregator_jobs:
-            all_jobs.extend(normalized_aggregator_jobs)
-            if user_id:
-                append_jobs_to_csv(normalized_aggregator_jobs, "job_matches.csv", user_id=user_id)
-            else:
-                append_jobs_to_csv(normalized_aggregator_jobs, "job_matches.csv")
-            logger.info("Structured aggregators added %s jobs before Gemini search", len(normalized_aggregator_jobs))
-    
-    for batch_idx, role_batch in enumerate(roles_batches, 1):
-        batch_roles_str = ", ".join(role_batch)
-        logger.info(
-            f"🔍 [Batch {batch_idx}/{len(roles_batches)}] "
-            f"Searching for roles: {batch_roles_str[:80]}..."
-        )
+
+    normalized_jobs = [normalize_job(job) for job in aggregator_jobs if isinstance(job, dict)]
+    normalized_jobs = [job for job in normalized_jobs if job is not None]
+    normalized_jobs = [job for job in normalized_jobs if not excluded_by_role(job)]
+    normalized_jobs = await validate_listing_urls(normalized_jobs)
+    normalized_jobs = keep_new_jobs(normalized_jobs)
+
+    all_jobs: List[Dict[str, Any]] = []
+    if not normalized_jobs:
+        logger.info("✅ Agent 2 complete: No new jobs returned by the configured job-search APIs")
         if search_id:
-            progress_pct = 55 + int((batch_idx / len(roles_batches)) * 35)
-            update_search_status(
-                search_id,
-                f"Searching batch {batch_idx}/{len(roles_batches)}: {batch_roles_str[:80]}...",
-                progress_pct,
-            )
-            update_search_status(
-                search_id,
-                f"Waiting for structured job sources and configured search providers for batch {batch_idx}/{len(roles_batches)}...",
-                progress_pct,
-            )
+            update_search_status(search_id, "No new jobs returned by the configured job-search APIs.", 95)
+        return all_jobs
+
+    if search_id:
+        update_search_status(search_id, f"Scoring {len(normalized_jobs)} job(s) against your CV...", 75)
+
+    match_batch_size = 10
+    match_batches = [normalized_jobs[i:i + match_batch_size] for i in range(0, len(normalized_jobs), match_batch_size)]
+    for batch_idx, batch in enumerate(match_batches, 1):
         try:
-            location_str = target_location.strip() or TARGET_LOCATION or "the location stated in the candidate's profile above"
-            language_signals = extract_cv_languages(cv_summary)
-            language_hint = (
-                f" Language signals from the CV: {', '.join(language_signals)}. Include relevant bilingual language requirements when they align with the candidate profile."
-                if language_signals
-                else ""
+            enrichment = await run_job_matcher_agent(cv_summary, batch, cv_names, applied_job_preferences)
+        except HTTPException as exc:
+            logger.warning("Job matching failed for batch %s: %s", batch_idx, exc.detail)
+            enrichment = {}
+
+        for job in batch:
+            key = (str(job.get("Job Title", "")).strip().casefold(), str(job.get("Company", "")).strip().casefold())
+            match = enrichment.get(key)
+            if not match:
+                continue
+            for field in (
+                "Fit Score (%)",
+                "Match Reasons",
+                "Missing Requirements",
+                "Required Experience Years",
+                "Seniority Level",
+                "Recommended CV",
+                "CV Tailoring Recommendation",
+            ):
+                if match.get(field):
+                    job[field] = str(match[field]).strip()
+            for list_field in ("Extracted Skills", "Required Experience Areas", "Must Have Requirements", "Nice To Have"):
+                value = match.get(list_field)
+                if isinstance(value, list) and value:
+                    job[list_field] = "; ".join(str(item).strip() for item in value if str(item).strip())
+            embedding_text = match.get("Embedding Text")
+            if embedding_text:
+                job["Embedding Text"] = str(embedding_text).strip()
+
+        if search_id:
+            progress_pct = 75 + int((batch_idx / len(match_batches)) * 20)
+            update_search_status(
+                search_id,
+                f"Scored batch {batch_idx}/{len(match_batches)} ({len(batch)} job(s)).",
+                progress_pct,
             )
 
-            instructions = f"""
-You are an automated career matching agent using Google Search.
-
-Search for ACTIVE open job listings specifically in **{location_str}** and across Irish hiring boards relevant to Dublin and Ireland, including IrishJobs, Jobs.ie, MCS Group, Sigmar Recruitment, Morgan McKinley, LinkedIn, Indeed, Greenhouse, Workday, and similar board sources.
-
-Search roles and close variants:
-[{batch_roles_str}]
-
-STRICT EXCLUSION LIST (DO NOT INCLUDE ANY OF THESE ROLES):
-[{excluded_str}]
-
-CRITICAL REQUIREMENTS:
-1. Only return jobs posted within the last {max_posting_age_days} days.
-2. Filter out any jobs older than {max_posting_age_days} days.
-2a. Before returning any result, compare its normalized job title and company against the
-    complete saved-job ledger below. Do not return duplicates, even if the new URL or source
-    is different. Review the entire ledger, not only the current search batch.
-3. If the listing page says "No longer accepting applications", "applications are closed",
-    "position is no longer open", "role is no longer active", or any equivalent closure note,
-    treat it as Expired and do not save it as an active job. Ignore these listings entirely.
-4. Match candidate skills from profile: {cv_summary[:300]}...
-5. Treat the requested roles as primary search signals, but do not require an exact title match if the job is clearly aligned with the candidate profile and role family. Close variants such as QA, test engineer, support engineer, product support, systems analyst, incident analyst, implementation specialist, customer success, and other related titles are valid when they match the CV experience.
-6. {language_hint if language_hint else 'Use the CV language signals when they matter for language-based roles but do not exclude otherwise suitable jobs.'}
-7. Return the exact direct URL of each job listing from the search result; never use N/A,
-    a company homepage, a search page, or a fabricated URL. If no direct listing URL is
-    available, include the job with "Not specified" and mark the URL status accordingly.
-8. Extract the posting date when visible. Use "Not specified" only when the listing does
-    not show a date. Normalize working type to exactly Remote, Hybrid, On-site, or
-    Not specified.
-9. Extract the salary or compensation exactly as shown. Use "Not specified" when it is
-    not available; do not estimate or invent salary.
-10. Select the best matching CV filename from this list and return it exactly:
-    [{", ".join(cv_names)}]
-11. Provide a concrete recommendation for tailoring that selected CV to this job,
-    including which skills, experience, or keywords to emphasize.
-12. Extract the complete job description from the original listing, preserving all
-    available sections, paragraphs, responsibilities, requirements, qualifications,
-    benefits, and other visible content. Do not summarize or shorten it. Do not invent
-    details. The description must contain at least 500 characters of source text. If the
-    full description cannot be retrieved, do not return that job.
-13. Check sources in this strict order: first the exact LinkedIn posting, then the exact
-    job-board posting (Indeed, IrishJobs, Jobs.ie, Greenhouse, Workday, or another board),
-    then the employer's official careers listing. Inspect the LinkedIn page status before using
-    any other source. If LinkedIn says "No longer accepting applications", "applications
-    are closed", "position is no longer open", or similar, classify the role as Expired,
-    quote that wording in the verification notes, and do not return or save it as Active.
-    A job-board copy, official homepage, or older search snippet must never override a
-    LinkedIn closure message. Do not treat a company careers homepage, a generic
-    Greenhouse board, or a different job ID as verification. The official page must show
-    the exact job title and employer; otherwise mark it No.
-14. Set Listing Source to Official company website or the job-board name. Set Official
-    Listing Verified to Yes only when the exact role is found on the official employer
-    site; otherwise set it to No and put Not specified in Official Listing URL.
-15. Always return Original Listing URL as the exact direct URL where the job was found.
-    Return the official URL in URL when verified; otherwise return the original job-board
-    URL in URL.
-16. Use this applied-job history as a strong preference signal. Prioritize new jobs that
-    resemble the user's repeatedly applied role families and title patterns, but do not
-    assume that every previously applied role is suitable. The CV, target roles, exclusion
-    list, location, freshness, exact listing identity, expiry checks, and language fit remain
-    mandatory.
-17. Applied-job preference profile:
-{applied_job_preferences}
-18. Existing saved-job ledger for duplicate checking:
-{existing_jobs_summary}
-
-FIT SCORE RUBRIC — follow this exactly when setting "Fit Score (%)":
-Start at 100 and apply the following deductions before assigning the score.
-
-HARD REQUIREMENT PENALTIES (apply each that is unmet):
-- Named proprietary tool/platform the candidate has no experience with (e.g. SAP, Salesforce,
-  Hogan, Unibanks, Workday, ServiceNow, specific CMS): -20 per unmet tool, max -40
-- Required years of experience the candidate clearly does not meet (e.g. "5+ years" when
-  candidate has 1-2 years in that discipline): -20 per unmet requirement, max -30
-- Mandatory degree or certification not present on the CV (e.g. "postgraduate required",
-  "CPA required", "CISSP required"): -25
-- Required domain-specific background the candidate has none of (e.g. "pharma GxP experience
-  required", "financial services background required"): -20
-- Automation or testing framework experience explicitly required but candidate's experience
-  is clearly in a different form of automation (e.g. role requires Playwright/Selenium/
-  Cypress test automation; candidate has workflow/process automation only): -20
-
-OVERMATCHING GUARD — keyword presence alone is not a match:
-- Do not award credit for a skill or tool if the CV only mentions it in passing or lists it
-  without demonstrating professional depth. Only count skills with clear evidence of sustained
-  use (multiple roles, quantified outcomes, or project ownership).
-- Do not treat "QA" as equivalent to "test automation". Do not treat "Python scripting" as
-  equivalent to "software engineering". Do not treat "data analysis" as equivalent to
-  "BI/data analytics tooling experience". Match the depth, not just the keyword.
-
-SCORING FLOOR:
-- Any job with 2 or more unmet hard requirements must score 65% or below.
-- Any job with a named proprietary tool requirement the candidate clearly lacks must score
-  70% or below, regardless of other matches.
-
-For "Match Reasons": write 2-4 sentences explaining the strongest genuine overlaps between
-the candidate profile and this specific role. Be honest — do not pad with generic claims.
-
-For "Missing Requirements": list every hard requirement from the job description that the
-candidate does not clearly meet. Use a bullet list. Write "None identified" if there are
-no meaningful gaps. This field must reflect the actual job description, not generic advice.
-
-Output ONLY a valid JSON array (no markdown, no ```json wrapper):
-[
-  {{
-    "Job Title": "Exact Job Title",
-    "Company": "Company Name",
-    "Location": "Location",
-    "Fit Score (%)": "e.g., 85%",
-    "Match Reasons": "2-4 sentences on genuine overlaps",
-    "Missing Requirements": "Bullet list of unmet hard requirements, or None identified",
-    "Job Description": "Complete job description copied verbatim from the original listing",
-    "Extracted Skills": ["Hard skills, tools, frameworks, and certifications found in the listing"],
-    "Required Experience Years": "Required years or Not specified",
-    "Required Experience Areas": ["Core areas of required experience"],
-    "Seniority Level": "Entry, Mid, Senior, Lead, Manager, or Not specified",
-    "Must Have Requirements": ["Hard requirements that can disqualify a candidate"],
-    "Nice To Have": ["Preferred but non-blocking qualifications"],
-    "Embedding Text": "Concise normalized text combining title, skills, seniority, requirements, and responsibilities",
-    "Recommended CV": "Exact uploaded CV filename",
-    "CV Tailoring Recommendation": "Specific changes or emphasis for this job",
-    "Status": "Active",
-    "URL": "https://direct-job-listing-url",
-    "Listing Source": "Official company website or job board name",
-    "Official Listing Verified": "Yes or No",
-    "Official Listing URL": "https://official-exact-job-listing or Not specified",
-    "Original Listing URL": "https://exact-source-job-listing",
-    "Posted Date": "YYYY-MM-DD or Not specified",
-    "Working Type": "Remote, Hybrid, On-site, or Not specified",
-    "Salary": "Salary or compensation exactly as listed, or Not specified"
-  }}
-]
-"""
-
-            prompt = (
-                f"Search Google for job listings in {location_str} and Ireland for these role signals: {batch_roles_str}. "
-                f"Look across relevant Irish job boards and employer pages, not only exact-title searches. "
-                f"Only include jobs posted in the last {max_posting_age_days} days. "
-                f"Prioritize the user's demonstrated applied-job preferences described in the instructions. "
-                f"Do not return any title/company pair already present in the complete saved-job ledger included in your instructions. "
-                f"Match them against this candidate profile and score strictly using the rubric in your instructions:\n{cv_summary}{language_hint}"
-            )
-            response = await call_job_search_model(instructions, prompt)
-
-            # Parse JSON response
-            try:
-                batch_jobs = extract_json_array(response)
-                if isinstance(batch_jobs, list):
-                    parsed_count = len(batch_jobs)
-                    normalized_jobs = [normalize_job(job) for job in batch_jobs if isinstance(job, dict)]
-                    normalized_jobs = [job for job in normalized_jobs if job is not None]
-                    normalized_count = len(normalized_jobs)
-                    valid_jobs = await validate_listing_urls(normalized_jobs)
-                    url_validated_count = len(valid_jobs)
-                    valid_jobs = keep_new_jobs(valid_jobs)
-                    duplicate_count = url_validated_count - len(valid_jobs)
-
-                    if not valid_jobs:
-                        preferred_provider = os.getenv("JOB_SEARCH_PROVIDER", "openai").strip().lower()
-                        recovery_provider = "gemini" if preferred_provider == "openai" else "openai"
-                        update_search_status(
-                            search_id,
-                            f"Batch {batch_idx}: {parsed_count} parsed, {normalized_count} passed content checks, "
-                            f"{url_validated_count} passed listing checks, {duplicate_count} duplicates; "
-                            f"trying {recovery_provider} recovery...",
-                            progress_pct,
-                        ) if search_id else None
-                        recovery_response = None
-                        if recovery_provider == "gemini":
-                            try:
-                                recovery_response = await call_gemini_with_retry(
-                                    instructions, prompt, use_google_search=True, max_retries=3, initial_delay=5
-                                )
-                            except HTTPException:
-                                recovery_response = None
-                        else:
-                            recovery_response = await call_openai_fallback(
-                                instructions, prompt, use_google_search=True,
-                                model=os.getenv("OPENAI_SEARCH_MODEL", "gpt-4o"),
-                            )
-                        if recovery_response:
-                            try:
-                                recovered_jobs = extract_json_array(recovery_response)
-                            except json.JSONDecodeError:
-                                recovered_jobs = []
-                            recovered_normalized = [normalize_job(job) for job in recovered_jobs if isinstance(job, dict)]
-                            recovered_normalized = [job for job in recovered_normalized if job is not None]
-                            recovered_validated = await validate_listing_urls(recovered_normalized)
-                            valid_jobs = keep_new_jobs(recovered_validated)
-                    all_jobs.extend(valid_jobs)
-                    if len(valid_jobs) > 0:
-                        if user_id:
-                            append_jobs_to_csv(valid_jobs, "job_matches.csv", user_id=user_id)
-                        else:
-                            append_jobs_to_csv(valid_jobs, "job_matches.csv")
-                        result_message = f"Batch {batch_idx}: found {len(valid_jobs)} jobs and saved them to CSV."
-                        logger.info(f"✅ {result_message}")
-                    else:
-                        result_message = (
-                            f"Batch {batch_idx}: no usable jobs after provider and listing checks "
-                            f"({parsed_count} parsed, {normalized_count} passed content checks, "
-                            f"{url_validated_count} passed listing checks, {duplicate_count} duplicates)."
-                        )
-                        logger.info(f"ℹ️ {result_message}")
-
-                    if search_id:
-                        update_search_status(search_id, result_message, progress_pct)
-                else:
-                    result_message = f"Batch {batch_idx}: no valid jobs returned."
-                    logger.warning(f"⚠️ {result_message}")
-                    if search_id:
-                        update_search_status(search_id, result_message, progress_pct)
-            except json.JSONDecodeError as e:
-                preferred_provider = os.getenv("JOB_SEARCH_PROVIDER", "openai").strip().lower()
-                recovery_provider = "gemini" if preferred_provider == "openai" else "openai"
-                logger.warning(
-                    "Batch %s: %s response was not parseable (%s characters); trying %s recovery",
-                    batch_idx,
-                    preferred_provider,
-                    len(response),
-                    recovery_provider,
-                )
-                recovered_jobs: List[Dict[str, Any]] = []
-                if recovery_provider == "gemini":
-                    try:
-                        recovery_response = await call_gemini_with_retry(
-                            instructions,
-                            prompt,
-                            use_google_search=True,
-                            max_retries=3,
-                            initial_delay=5,
-                        )
-                    except HTTPException:
-                        recovery_response = None
-                else:
-                    recovery_response = await call_openai_fallback(
-                        instructions,
-                        prompt,
-                        use_google_search=True,
-                        model=os.getenv("OPENAI_SEARCH_MODEL", "gpt-4o"),
-                    )
-                if recovery_response:
-                    try:
-                        recovered_jobs = [
-                            job for job in extract_json_array(recovery_response)
-                            if isinstance(job, dict)
-                        ]
-                    except json.JSONDecodeError:
-                        recovered_jobs = []
-
-                valid_jobs = [normalize_job(job) for job in recovered_jobs]
-                valid_jobs = [job for job in valid_jobs if job is not None]
-                valid_jobs = await validate_listing_urls(valid_jobs)
-                valid_jobs = keep_new_jobs(valid_jobs)
-                all_jobs.extend(valid_jobs)
-                if valid_jobs:
-                    if user_id:
-                        append_jobs_to_csv(valid_jobs, "job_matches.csv", user_id=user_id)
-                    else:
-                        append_jobs_to_csv(valid_jobs, "job_matches.csv")
-                    result_message = f"Batch {batch_idx}: recovered {len(valid_jobs)} jobs with OpenAI and saved them to CSV."
-                else:
-                    result_message = f"Batch {batch_idx}: both AI responses were not parseable; no jobs parsed."
-                logger.warning(f"⚠️ {result_message} - {e}")
-                if search_id:
-                    update_search_status(search_id, result_message, progress_pct)
-                continue
-
-            # Small delay only to avoid rate limiting.
-            if batch_idx < len(roles_batches):
-                await asyncio.sleep(1)
-
-        except HTTPException as e:
-            if "503" in str(e.detail) or "rate" in str(e.detail).lower():
-                if all_jobs:
-                    result_message = (
-                        f"Search interrupted after batch {batch_idx}: {len(all_jobs)} jobs found so far. "
-                        "Partial results will be kept."
-                    )
-                    logger.info(f"🛑 {result_message}")
-                    if search_id:
-                        update_search_status(search_id, result_message, progress_pct)
-                else:
-                    result_message = (
-                        f"Search interrupted after batch {batch_idx}: no jobs found before the error."
-                    )
-                    logger.info(f"🛑 {result_message}")
-                    if search_id:
-                        update_search_status(search_id, result_message, progress_pct)
-                break
-            else:
-                result_message = f"Batch {batch_idx} failed: {e.detail}. Continuing..."
-                logger.warning(f"⚠️ {result_message}")
-                if search_id:
-                    update_search_status(search_id, result_message, progress_pct)
-                continue
-    
-    if all_jobs:
-        logger.info(f"✅ Agent 2 complete with partial results: Found {len(all_jobs)} total matching jobs")
+    all_jobs.extend(normalized_jobs)
+    if user_id:
+        append_jobs_to_csv(normalized_jobs, "job_matches.csv", user_id=user_id)
     else:
-        logger.info("✅ Agent 2 complete: No jobs found before the search ended")
+        append_jobs_to_csv(normalized_jobs, "job_matches.csv")
+
+    logger.info(f"✅ Agent 2 complete: Found and scored {len(all_jobs)} job(s) via structured job-search APIs")
+    if search_id:
+        update_search_status(search_id, f"Job search complete: {len(all_jobs)} job(s) found via structured APIs.", 95)
     return all_jobs
 
 
