@@ -410,18 +410,8 @@ def _jooble_posted_date(raw_job: Dict[str, Any]) -> str:
 
 
 def _map_aggregator_job(raw_job: Dict[str, Any], source: str) -> Dict[str, Any]:
-    """Map Adzuna/JSearch/Jooble records into the existing normalized job contract."""
-    if source == "adzuna":
-        title = raw_job.get("title") or "Not specified"
-        company = (raw_job.get("company") or {}).get("display_name") or "Not specified"
-        location = (raw_job.get("location") or {}).get("display_name") or "Not specified"
-        url = raw_job.get("redirect_url") or raw_job.get("url") or "Not specified"
-        description = raw_job.get("description") or "Not specified"
-        posted_date = raw_job.get("created") or "Not specified"
-        salary = "Not specified"
-        if raw_job.get("salary_min") or raw_job.get("salary_max"):
-            salary = f"{raw_job.get('salary_min', '')}-{raw_job.get('salary_max', '')}"
-    elif source == "jooble":
+    """Map JSearch/Jooble records into the existing normalized job contract."""
+    if source == "jooble":
         title = raw_job.get("title") or "Not specified"
         company = raw_job.get("company") or "Not specified"
         location = raw_job.get("location") or "Not specified"
@@ -461,53 +451,17 @@ async def fetch_aggregator_jobs(
     location: str,
     max_posting_age_days: int,
 ) -> List[Dict[str, Any]]:
-    """Fetch optional structured listings from Adzuna, JSearch, and/or Jooble."""
+    """Fetch optional structured listings from JSearch and/or Jooble."""
     providers = {
         value.strip().lower()
         for value in os.getenv("JOB_AGGREGATORS", "").split(",")
         if value.strip()
-    } & {"adzuna", "jsearch", "jooble"}
+    } & {"jsearch", "jooble"}
     if not providers:
         return []
 
     async def fetch_provider(provider: str) -> List[Dict[str, Any]]:
         try:
-            if provider == "adzuna":
-                app_id = os.getenv("ADZUNA_APP_ID")
-                app_key = os.getenv("ADZUNA_APP_KEY")
-                # Adzuna has no Ireland index; "ie" always fails with UNSUPPORTED_COUNTRY.
-                # Fall back to "gb" (closest supported market) unless the caller overrides it.
-                country = os.getenv("ADZUNA_COUNTRY", "gb")
-                supported_countries = {
-                    "at", "au", "be", "br", "ca", "ch", "de", "es", "fr", "gb",
-                    "in", "it", "mx", "nl", "nz", "pl", "sg", "us", "za",
-                }
-                if not app_id or not app_key:
-                    return []
-                if country not in supported_countries:
-                    logger.warning(
-                        "Adzuna does not support country '%s' (supported: %s); skipping Adzuna",
-                        country, ", ".join(sorted(supported_countries)),
-                    )
-                    return []
-                results = []
-                for role in roles:
-                    params = urllib.parse.urlencode({
-                        "app_id": app_id,
-                        "app_key": app_key,
-                        "results_per_page": 20,
-                        "what": role,
-                        "where": location,
-                        "max_days_old": max_posting_age_days,
-                        "content-type": "application/json",
-                    })
-                    data = await asyncio.to_thread(
-                        _aggregator_request,
-                        f"https://api.adzuna.com/v1/api/jobs/{country}/search/1?{params}",
-                    )
-                    results.extend(_map_aggregator_job(job, provider) for job in data.get("results", []))
-                return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
-
             if provider == "jooble":
                 api_key = os.getenv("JOOBLE_API_KEY")
                 if not api_key:
@@ -521,7 +475,7 @@ async def fetch_aggregator_jobs(
                     )
                     results.extend(_map_aggregator_job(job, provider) for job in data.get("jobs", []))
                 # Jooble's free tier has a 500-request lifetime limit per key; keep this as a
-                # supplementary source alongside Adzuna/JSearch rather than the sole provider.
+                # supplementary source alongside JSearch rather than the sole provider.
                 return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
 
             rapid_key = os.getenv("RAPIDAPI_KEY")
@@ -1809,7 +1763,7 @@ async def run_incremental_job_finder(
     """
     AGENT 2: Fetches jobs from structured job-search APIs and scores them against the candidate.
 
-    Job discovery is API-only (Adzuna/JSearch/Jooble via JOB_AGGREGATORS); AI is only used afterward to
+    Job discovery is API-only (JSearch/Jooble via JOB_AGGREGATORS); AI is only used afterward to
     score, explain, and recommend a CV for the listings the APIs returned.
 
     Args:

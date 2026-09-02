@@ -7,7 +7,7 @@ CareerMatch is a CV-powered job search dashboard. Upload one or more CVs, config
 - Upload multiple PDF or DOCX CVs.
 - Reuse saved CV analysis for later searches.
 - Configure and save target or excluded roles locally in the browser.
-- Search jobs via structured job-search APIs (Adzuna, JSearch, optionally Jooble), then score results with AI against your CV.
+- Search jobs via structured job-search APIs (JSearch, Jooble), then score results with AI against your CV.
 - Prefer official employer listings and preserve original job-board URLs.
 - Save results incrementally after each search batch.
 - Persist jobs in Firebase Firestore when Firebase environment variables are configured; otherwise use the local CSV.
@@ -67,10 +67,8 @@ CV_EXTRACTION_PROVIDER=gemini
 OPENAI_EXTRACTION_MODEL=gpt-4o-mini
 ANTHROPIC_API_KEY=your-anthropic-api-key
 ANTHROPIC_EXTRACTION_MODEL=claude-3-5-sonnet-latest
-# Structured job sources used for job discovery. Use any of "adzuna", "jsearch", "jooble".
-JOB_AGGREGATORS=adzuna,jsearch
-ADZUNA_APP_ID=your-adzuna-app-id
-ADZUNA_APP_KEY=your-adzuna-app-key
+# Structured job sources used for job discovery. Use any of "jsearch", "jooble".
+JOB_AGGREGATORS=jsearch,jooble
 RAPIDAPI_KEY=your-rapidapi-key
 JOOBLE_API_KEY=your-jooble-api-key
 # AI provider used only to score/explain jobs already returned by the APIs above.
@@ -91,7 +89,7 @@ Set `CV_EXTRACTION_PROVIDER=openai` to use GPT-4o-mini for CV structuring, or
 `CV_EXTRACTION_PROVIDER=anthropic` to use Claude for complex multi-page layouts.
 The default remains Gemini so existing deployments do not change behavior.
 
-Job discovery is API-only: set `JOB_AGGREGATORS=adzuna,jsearch` with the
+Job discovery is API-only: set `JOB_AGGREGATORS=jsearch,jooble` with the
 matching API keys to fetch listings. There is no AI-based job search — Gemini
 and OpenAI are never used to find or invent listings, only to score the jobs
 the APIs return. Aggregator results still pass through the existing
@@ -99,18 +97,11 @@ duplicate, description, and dead-link validation, and freshness is enforced
 from each provider's own posting timestamp (not an AI guess), using the
 search's configured "posted within" days.
 
-Add `jooble` to `JOB_AGGREGATORS` and set `JOOBLE_API_KEY` to include Jooble
-as a third source; its listings carry an `updated` timestamp used the same
-way for freshness filtering. Jooble's free tier issues one key per country
-and caps each key at 500 lifetime requests, so keep it as a supplementary
-source alongside Adzuna/JSearch rather than your only aggregator.
-
-Adzuna has no Ireland index. Its supported country codes are `at, au, be,
-br, ca, ch, de, es, fr, gb, in, it, mx, nl, nz, pl, sg, us, za` — `ie`
-always fails with `UNSUPPORTED_COUNTRY`. `ADZUNA_COUNTRY` defaults to `gb`
-(the closest supported market); set it explicitly if you're targeting a
-different supported country. Unsupported values are skipped with a warning
-instead of failing the whole search.
+Set `JOOBLE_API_KEY` to enable Jooble alongside JSearch; its listings carry
+an `updated` timestamp used the same way for freshness filtering. Jooble's
+free tier issues one key per country and caps each key at 500 lifetime
+requests, so keep it as a supplementary source alongside JSearch rather
+than your only aggregator.
 
 Set `JOB_MATCH_PROVIDER=openai` (default) or `gemini` to choose which AI
 provider scores fetched jobs against the candidate CV — computing the fit
