@@ -531,6 +531,10 @@ async def fetch_aggregator_jobs(
                 )
                 results.extend(_map_aggregator_job(job, provider) for job in data.get("data", []))
             return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="ignore")[:300]
+            logger.warning("%s job aggregation failed: HTTP %s %s - %s", provider, exc.code, exc.reason, body)
+            return []
         except Exception as exc:
             logger.warning("%s job aggregation failed: %s", provider, type(exc).__name__)
             return []
