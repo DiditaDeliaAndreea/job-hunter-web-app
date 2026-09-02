@@ -1,5 +1,4 @@
 import { getApp, getApps, initializeApp } from 'firebase/app'
-import { getAnalytics, isSupported } from 'firebase/analytics'
 import { getAuth } from 'firebase/auth'
 
 const firebaseConfig = {
@@ -27,6 +26,6 @@ export const firebaseApp = hasFirebaseConfig
 export const firebaseAuth = firebaseApp ? getAuth(firebaseApp) : null
 
 export async function initializeFirebaseAnalytics(): Promise<void> {
-  if (!firebaseApp || typeof window === 'undefined' || !(await isSupported())) return
-  getAnalytics(firebaseApp)
+  // No-op: Analytics is unused (no logEvent calls) and its gtag.js script throws an
+  // uncaught "reportAllChanges" TypeError on some SPA navigations. Not worth loading.
 }
