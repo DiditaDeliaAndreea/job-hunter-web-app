@@ -1002,9 +1002,12 @@ async def run_search_pipeline(
                     )
                     try:
                         cv_summary = await run_cv_analyzer_agent(cv_text)
+                        CV_PROFILE_CACHE[content_hash] = cv_summary
                     except HTTPException as exc:
                         if exc.status_code != 503:
                             raise
+                        # Never cache the fallback text as if it were real analysis, or every
+                        # later search for this CV would keep reusing it and never retry.
                         cv_summary = (
                             "CV analysis was temporarily unavailable. Use the extracted CV content "
                             "directly for matching:\n" + cv_text[:12000]
@@ -1014,7 +1017,6 @@ async def run_search_pipeline(
                             f"CV {file_index}/{total_files} analysis unavailable; continuing with extracted CV text...",
                             int(file_index / total_files * 35),
                         )
-                    CV_PROFILE_CACHE[content_hash] = cv_summary
 
                 return filename, cv_summary
 
