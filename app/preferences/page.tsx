@@ -6,6 +6,51 @@ import { apiFetch } from '../../lib/api'
 import { readCachedPreferences, writeCachedPreferences } from '../../lib/client-cache'
 import BackButton from '../back-button'
 
+const parseRoles = (value: unknown): string[] => {
+  if (typeof value !== 'string') return []
+  return [...new Set(value.split(/[\n,]/).map((role) => role.trim().replace(/^['"]|['"]$/g, '').trim()).filter(Boolean))]
+}
+
+const addRole = (roles: string[], value: string): string[] => {
+  const newRoles = parseRoles(value)
+  return [...new Set([...roles, ...newRoles])]
+}
+
+const handleRoleInput = (
+  event: React.KeyboardEvent<HTMLInputElement>,
+  roles: string[],
+  setRoles: (roles: string[]) => void,
+  input: string,
+  setInput: (value: string) => void,
+) => {
+  if (event.key !== 'Enter' && event.key !== ',') return
+  event.preventDefault()
+  const nextRoles = addRole(roles, input)
+  setRoles(nextRoles)
+  setInput('')
+}
+
+const RolePills = ({ roles, setRoles, input, setInput, placeholder, pillClassName, removeClassName }: {
+  roles: string[]
+  setRoles: (roles: string[]) => void
+  input: string
+  setInput: (value: string) => void
+  placeholder: string
+  pillClassName?: string
+  removeClassName?: string
+}) => (
+  <div className="mt-6 min-h-60 flex-1 rounded-xl border border-slate-300 bg-white p-4 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 md:p-5">
+    <div className="flex flex-wrap content-start gap-3">
+      {roles.map((role) => (
+        <button key={role} type="button" onClick={() => setRoles(roles.filter((item) => item !== role))} className={`inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-xs font-semibold ${pillClassName || 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`} title="Remove role">
+          <span className="truncate">{role}</span><span aria-hidden="true" className={removeClassName || 'text-blue-400'}>x</span>
+        </button>
+      ))}
+      <input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => handleRoleInput(event, roles, setRoles, input, setInput)} onBlur={() => { const nextRoles = addRole(roles, input); setRoles(nextRoles); setInput('') }} placeholder={roles.length ? 'Add another role...' : placeholder} className="min-w-[14rem] flex-1 border-0 px-1 py-2 text-sm text-slate-800 outline-none" />
+    </div>
+  </div>
+)
+
 export default function PreferencesPage() {
   const cachedPreferences = readCachedPreferences()
   const [targetRoles, setTargetRoles] = useState<string[]>(cachedPreferences?.targetRoles || [])
@@ -15,11 +60,6 @@ export default function PreferencesPage() {
   const [targetLocation, setTargetLocation] = useState('')
   const [maxPostingAgeDays, setMaxPostingAgeDays] = useState(7)
   const [message, setMessage] = useState('')
-
-  const parseRoles = (value: unknown): string[] => {
-    if (typeof value !== 'string') return []
-    return [...new Set(value.split(/[\n,]/).map((role) => role.trim().replace(/^['"]|['"]$/g, '').trim()).filter(Boolean))]
-  }
 
   useEffect(() => {
     const loadPreferences = async () => {
@@ -44,11 +84,6 @@ export default function PreferencesPage() {
     }
     void loadPreferences()
   }, [])
-
-  const addRole = (roles: string[], value: string): string[] => {
-    const newRoles = parseRoles(value)
-    return [...new Set([...roles, ...newRoles])]
-  }
 
   const save = () => {
     const nextTargetRoles = addRole(targetRoles, targetInput)
@@ -82,41 +117,6 @@ export default function PreferencesPage() {
       setMessage('Job preferences cleared.')
     }).catch(() => setMessage('Could not clear preferences.'))
   }
-
-  const handleRoleInput = (
-    event: React.KeyboardEvent<HTMLInputElement>,
-    roles: string[],
-    setRoles: (roles: string[]) => void,
-    input: string,
-    setInput: (value: string) => void,
-  ) => {
-    if (event.key !== 'Enter' && event.key !== ',') return
-    event.preventDefault()
-    const nextRoles = addRole(roles, input)
-    setRoles(nextRoles)
-    setInput('')
-  }
-
-  const RolePills = ({ roles, setRoles, input, setInput, placeholder, pillClassName, removeClassName }: {
-    roles: string[]
-    setRoles: (roles: string[]) => void
-    input: string
-    setInput: (value: string) => void
-    placeholder: string
-    pillClassName?: string
-    removeClassName?: string
-  }) => (
-    <div className="mt-6 min-h-60 flex-1 rounded-xl border border-slate-300 bg-white p-4 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 md:p-5">
-      <div className="flex flex-wrap content-start gap-3">
-        {roles.map((role) => (
-          <button key={role} type="button" onClick={() => setRoles(roles.filter((item) => item !== role))} className={`inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-xs font-semibold ${pillClassName || 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`} title="Remove role">
-            <span className="truncate">{role}</span><span aria-hidden="true" className={removeClassName || 'text-blue-400'}>x</span>
-          </button>
-        ))}
-        <input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => handleRoleInput(event, roles, setRoles, input, setInput)} onBlur={() => { const nextRoles = addRole(roles, input); setRoles(nextRoles); setInput('') }} placeholder={roles.length ? 'Add another role...' : placeholder} className="min-w-[14rem] flex-1 border-0 px-1 py-2 text-sm text-slate-800 outline-none" />
-      </div>
-    </div>
-  )
 
   return (
     <main className="min-h-screen bg-slate-50 px-5 py-10 text-slate-900 md:px-12 lg:px-16">
