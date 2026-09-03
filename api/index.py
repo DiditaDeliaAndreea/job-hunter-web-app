@@ -494,7 +494,12 @@ async def fetch_aggregator_jobs(
                     f"https://jsearch.p.rapidapi.com/search-v2?{params}",
                     {"X-RapidAPI-Key": rapid_key, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
                 )
-                results.extend(_map_aggregator_job(job, provider) for job in data.get("data", []))
+                raw_jobs = data.get("data") if isinstance(data, dict) else None
+                if isinstance(raw_jobs, dict):
+                    raw_jobs = raw_jobs.get("jobs") or raw_jobs.get("results") or []
+                if not isinstance(raw_jobs, list):
+                    raw_jobs = []
+                results.extend(_map_aggregator_job(job, provider) for job in raw_jobs if isinstance(job, dict))
             return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="ignore")[:300]
