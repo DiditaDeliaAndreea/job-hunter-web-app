@@ -219,7 +219,9 @@ def is_diagnostics_admin(user_id: str) -> bool:
         if value.strip()
     }
     return user_id in configured_admins
-MIN_FULL_DESCRIPTION_LENGTH = 500
+# Aggregator APIs (JSearch, Jooble) return short preview snippets, not full descriptions
+# like the old AI-search path did, so this only filters out empty/placeholder text.
+MIN_FULL_DESCRIPTION_LENGTH = 40
 
 
 def is_expired_listing_text(text: str | None) -> bool:
@@ -1838,12 +1840,28 @@ async def run_incremental_job_finder(
 
     aggregator_location = target_location.strip() or TARGET_LOCATION or "Ireland"
     aggregator_jobs = await fetch_aggregator_jobs(target_roles, aggregator_location, max_posting_age_days)
+    raw_count = len(aggregator_jobs)
 
     normalized_jobs = [normalize_job(job) for job in aggregator_jobs if isinstance(job, dict)]
     normalized_jobs = [job for job in normalized_jobs if job is not None]
+    normalized_count = len(normalized_jobs)
     normalized_jobs = [job for job in normalized_jobs if not excluded_by_role(job)]
+    excluded_count = len(normalized_jobs)
     normalized_jobs = await validate_listing_urls(normalized_jobs)
+    url_validated_count = len(normalized_jobs)
     normalized_jobs = keep_new_jobs(normalized_jobs)
+    deduped_count = len(normalized_jobs)
+    logger.info(
+        "Aggregator pipeline: %s raw -> %s passed content checks -> %s passed exclusion filter "
+        "-> %s passed listing checks -> %s new (non-duplicate)",
+        raw_count, normalized_count, excluded_count, url_validated_count, deduped_count,
+    )
+    if search_id:
+        update_search_status(
+            search_id,
+            f"Structured APIs returned {raw_count} raw result(s); {deduped_count} passed all checks.",
+            65,
+        )
 
     all_jobs: List[Dict[str, Any]] = []
     if not normalized_jobs:
