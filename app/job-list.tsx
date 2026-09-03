@@ -38,7 +38,7 @@ export default function JobList({ applied }: { applied: boolean }) {
   const [verificationLogs, setVerificationLogs] = useState<string[]>([])
   const [jobFilter, setJobFilter] = useState('')
   const [workingTypeFilter, setWorkingTypeFilter] = useState('All')
-  const [minimumScore, setMinimumScore] = useState('0')
+  const [minimumScore, setMinimumScore] = useState('70')
   const [salaryFilter, setSalaryFilter] = useState('All')
   const [postedDateFilter, setPostedDateFilter] = useState('All')
   const [jobSort, setJobSort] = useState('fit-score-desc')
@@ -192,7 +192,7 @@ export default function JobList({ applied }: { applied: boolean }) {
   const clearJobFilters = () => {
     setJobFilter('')
     setWorkingTypeFilter('All')
-    setMinimumScore('0')
+    setMinimumScore('70')
     setSalaryFilter('All')
     setPostedDateFilter('All')
     setJobSort('fit-score-desc')
