@@ -501,7 +501,7 @@ async def fetch_aggregator_jobs(
             logger.warning("%s job aggregation failed: HTTP %s %s - %s", provider, exc.code, exc.reason, body)
             return []
         except Exception as exc:
-            logger.warning("%s job aggregation failed: %s", provider, type(exc).__name__)
+            logger.warning("%s job aggregation failed: %s: %s", provider, type(exc).__name__, exc)
             return []
 
     provider_results = await asyncio.gather(*(fetch_provider(provider) for provider in providers))
