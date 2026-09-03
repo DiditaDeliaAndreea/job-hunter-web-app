@@ -466,7 +466,15 @@ async def fetch_aggregator_jobs(
     # also risks timing out given JSearch's own ~6-7s average latency per call. Cap how
     # many role keywords are actually sent to these metered APIs per search.
     max_aggregator_roles = int(os.getenv("MAX_AGGREGATOR_ROLES", "8"))
-    capped_roles = roles[:max_aggregator_roles]
+    if len(roles) > max_aggregator_roles:
+        # A strict prefix would cluster on the synonyms of just the first target role,
+        # since _expand_role_variants() expands each original role into several variants
+        # in sequence. Stride across the full list instead so the capped sample still
+        # represents every original target role and CV-inferred role, not just the first.
+        stride = max(1, len(roles) // max_aggregator_roles)
+        capped_roles = roles[::stride][:max_aggregator_roles]
+    else:
+        capped_roles = roles
     role_concurrency = asyncio.Semaphore(3)
 
     async def fetch_provider(provider: str) -> List[Dict[str, Any]]:
