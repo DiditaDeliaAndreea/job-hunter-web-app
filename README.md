@@ -103,6 +103,15 @@ free tier issues one key per country and caps each key at 500 lifetime
 requests, so keep it as a supplementary source alongside JSearch rather
 than your only aggregator.
 
+Role signal expansion (target roles plus CV-inferred variants) can produce
+100+ role keywords per search. Querying every one against JSearch/Jooble
+would exhaust JSearch's 200-request/month free-tier quota or Jooble's
+500-request lifetime cap within a search or two, and risks timing out given
+JSearch's own multi-second average latency per call. `MAX_AGGREGATOR_ROLES`
+(default `8`) caps how many role keywords are actually sent to these
+metered APIs per search; per-role requests run with bounded concurrency so
+one slow or failing role doesn't block the rest.
+
 Set `JOB_MATCH_PROVIDER=openai` (default) or `gemini` to choose which AI
 provider scores fetched jobs against the candidate CV — computing the fit
 score, match reasons, missing requirements, extracted skills, and the

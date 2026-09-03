@@ -460,54 +460,68 @@ async def fetch_aggregator_jobs(
     if not providers:
         return []
 
-    async def fetch_provider(provider: str) -> List[Dict[str, Any]]:
-        try:
-            if provider == "jooble":
-                api_key = os.getenv("JOOBLE_API_KEY")
-                if not api_key:
-                    return []
-                results = []
-                for role in roles:
-                    data = await asyncio.to_thread(
-                        _aggregator_post_request,
-                        f"https://jooble.org/api/{api_key}",
-                        {"keywords": role, "location": location},
-                    )
-                    results.extend(_map_aggregator_job(job, provider) for job in data.get("jobs", []))
-                # Jooble's free tier has a 500-request lifetime limit per key; keep this as a
-                # supplementary source alongside JSearch rather than the sole provider.
-                return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
+    # JSearch's free tier is capped at 200 requests/month and Jooble's free tier at 500
+    # requests for the key's lifetime; querying every expanded role variant (which can
+    # number in the hundreds) would exhaust either quota within one or two searches and
+    # also risks timing out given JSearch's own ~6-7s average latency per call. Cap how
+    # many role keywords are actually sent to these metered APIs per search.
+    max_aggregator_roles = int(os.getenv("MAX_AGGREGATOR_ROLES", "8"))
+    capped_roles = roles[:max_aggregator_roles]
+    role_concurrency = asyncio.Semaphore(3)
 
-            rapid_key = os.getenv("RAPIDAPI_KEY")
-            if not rapid_key:
-                return []
-            results = []
-            for role in roles:
-                params = urllib.parse.urlencode({
-                    "query": role,
-                    "num_pages": 1,
-                    "country": "ie",
-                    "date_posted": _jsearch_date_posted(max_posting_age_days),
-                })
-                data = await asyncio.to_thread(
-                    _aggregator_request,
-                    f"https://jsearch.p.rapidapi.com/search-v2?{params}",
-                    {"X-RapidAPI-Key": rapid_key, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
-                )
-                raw_jobs = data.get("data") if isinstance(data, dict) else None
-                if isinstance(raw_jobs, dict):
-                    raw_jobs = raw_jobs.get("jobs") or raw_jobs.get("results") or []
-                if not isinstance(raw_jobs, list):
-                    raw_jobs = []
-                results.extend(_map_aggregator_job(job, provider) for job in raw_jobs if isinstance(job, dict))
-            return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="ignore")[:300]
-            logger.warning("%s job aggregation failed: HTTP %s %s - %s", provider, exc.code, exc.reason, body)
-            return []
-        except Exception as exc:
-            logger.warning("%s job aggregation failed: %s: %s", provider, type(exc).__name__, exc)
-            return []
+    async def fetch_provider(provider: str) -> List[Dict[str, Any]]:
+        async def fetch_role(role: str) -> List[Dict[str, Any]]:
+            async with role_concurrency:
+                try:
+                    if provider == "jooble":
+                        api_key = os.getenv("JOOBLE_API_KEY")
+                        if not api_key:
+                            return []
+                        data = await asyncio.to_thread(
+                            _aggregator_post_request,
+                            f"https://jooble.org/api/{api_key}",
+                            {"keywords": role, "location": location},
+                        )
+                        raw_jobs = data.get("jobs") if isinstance(data, dict) else None
+                        raw_jobs = raw_jobs if isinstance(raw_jobs, list) else []
+                        return [_map_aggregator_job(job, provider) for job in raw_jobs if isinstance(job, dict)]
+
+                    rapid_key = os.getenv("RAPIDAPI_KEY")
+                    if not rapid_key:
+                        return []
+                    params = urllib.parse.urlencode({
+                        "query": role,
+                        "num_pages": 1,
+                        "country": "ie",
+                        "date_posted": _jsearch_date_posted(max_posting_age_days),
+                    })
+                    data = await asyncio.to_thread(
+                        _aggregator_request,
+                        f"https://jsearch.p.rapidapi.com/search-v2?{params}",
+                        {"X-RapidAPI-Key": rapid_key, "X-RapidAPI-Host": "jsearch.p.rapidapi.com"},
+                    )
+                    raw_jobs = data.get("data") if isinstance(data, dict) else None
+                    if isinstance(raw_jobs, dict):
+                        raw_jobs = raw_jobs.get("jobs") or raw_jobs.get("results") or []
+                    raw_jobs = raw_jobs if isinstance(raw_jobs, list) else []
+                    return [_map_aggregator_job(job, provider) for job in raw_jobs if isinstance(job, dict)]
+                except urllib.error.HTTPError as exc:
+                    body = exc.read().decode("utf-8", errors="ignore")[:300]
+                    logger.warning(
+                        "%s job aggregation failed for role '%s': HTTP %s %s - %s",
+                        provider, role, exc.code, exc.reason, body,
+                    )
+                    return []
+                except Exception as exc:
+                    logger.warning(
+                        "%s job aggregation failed for role '%s': %s: %s",
+                        provider, role, type(exc).__name__, exc,
+                    )
+                    return []
+
+        role_results = await asyncio.gather(*(fetch_role(role) for role in capped_roles))
+        results = [job for batch in role_results for job in batch]
+        return [job for job in results if _posted_within_max_age(job["Posted Date"], max_posting_age_days)]
 
     provider_results = await asyncio.gather(*(fetch_provider(provider) for provider in providers))
     return [job for result in provider_results for job in result]
