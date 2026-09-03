@@ -773,15 +773,27 @@ def build_search_roles(
     target_roles: List[str],
     excluded_roles: List[str],
     cv_summaries: List[str],
+    expand: bool = True,
 ) -> List[str]:
-    """Combine explicit and CV-inferred roles, then remove excluded roles and include related role variants."""
+    """Combine explicit and CV-inferred roles, then remove excluded roles.
+
+    Structured job-search APIs do their own fuzzy keyword matching, so expanding into
+    generic single-word synonyms (e.g. "Manager", "Lead", "Consultant" from
+    ROLE_VARIANT_MAP) does more harm than good there — those broad terms pull in
+    unrelated senior roles the candidate isn't qualified for. Set expand=False to keep
+    only the specific target/CV-inferred role names for that use case.
+    """
     inferred_roles = []
     for cv_summary in cv_summaries:
         inferred_roles.extend(extract_cv_role_suggestions(cv_summary))
 
-    expanded_roles: List[str] = []
-    for role in [*target_roles, *inferred_roles]:
-        expanded_roles.extend(_expand_role_variants(role))
+    if expand:
+        expanded_roles: List[str] = []
+        for role in [*target_roles, *inferred_roles]:
+            expanded_roles.extend(_expand_role_variants(role))
+    else:
+        expanded_roles = [*target_roles, *inferred_roles]
+
     excluded = {role.casefold() for role in excluded_roles}
     filtered = [
         role
@@ -1030,9 +1042,9 @@ async def run_search_pipeline(
         final_target_roles = list(dict.fromkeys(target_roles + prefs.get("target_roles", [])))
         final_excluded_roles = list(dict.fromkeys(excluded_roles + prefs.get("excluded_roles", [])))
 
-        expanded_target_roles = build_search_roles(final_target_roles, final_excluded_roles, cv_summaries)
+        expanded_target_roles = build_search_roles(final_target_roles, final_excluded_roles, cv_summaries, expand=False)
         if expanded_target_roles:
-            update_search_status(search_id, f"Expanded search to {len(expanded_target_roles)} related role signals based on the CV profile.", 55)
+            update_search_status(search_id, f"Searching {len(expanded_target_roles)} target role signal(s) from your preferences and CV profile.", 55)
         combined_summary = "\n\n--- NEXT CV PROFILE ---\n\n".join(cv_summaries)
         update_search_status(search_id, "Searching live jobs in batches...", 55)
         matched_jobs = await run_incremental_job_finder(
